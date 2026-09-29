@@ -6,6 +6,7 @@ var hp := 3
 var speed := 95.0
 var touch_damage := 12.0
 var dead := false
+var is_boss := false
 var itype := "shambler"
 var xp := 10
 var _frames := ["slime_idle", "slime_hop"]
@@ -103,7 +104,7 @@ func take_damage(amount: int) -> void:
 		if main == null or not main.has_method("on_infected_killed"):
 			main = get_tree().get_first_node_in_group("game_main")
 		if main != null:
-			main.call("on_infected_killed", global_position, xp)
+			main.call("on_infected_killed", global_position, xp, is_boss)
 		var tw := create_tween()
 		tw.set_parallel(true)
 		tw.tween_property($Sprite, "scale", Vector2(0.05, 0.05), 0.28)

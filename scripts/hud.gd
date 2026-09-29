@@ -2,7 +2,9 @@ extends CanvasLayer
 ## HUD: HP + infection bars, scrap, floor, power buttons, joystick, channel, draft, death.
 
 var player: CharacterBody2D
-var room_size := Vector2(2100, 2100)
+var boss_ref: Node = null
+var boss_bar: ProgressBar
+var boss_label: Label
 var hp_bar: ProgressBar
 var inf_bar: ProgressBar
 var inf_label: Label
@@ -26,27 +28,42 @@ var _t := 0.0
 var _toast_t := 0.0
 
 class Minimap extends Control:
-	var room := Vector2(2100, 2100)
+	var rooms: Array = []
+	var world_rect := Rect2(-1080, -1080, 2160, 2160)
 	func _process(_d: float) -> void:
 		queue_redraw()
+	func _w2m(wpos: Vector2) -> Vector2:
+		var k := minf(size.x / world_rect.size.x, size.y / world_rect.size.y)
+		var org := (size - world_rect.size * k) / 2.0
+		return org + (wpos - world_rect.position) * k
 	func _draw() -> void:
 		var r := Rect2(Vector2.ZERO, size)
 		draw_rect(r, Color(0, 0, 0, 0.55))
+		var k := minf(size.x / world_rect.size.x, size.y / world_rect.size.y)
+		for rm in rooms:
+			var c: Vector2 = (rm as Dictionary)["center"]
+			var rr := Rect2(_w2m(c - Vector2(360, 360)), Vector2(720, 720) * k)
+			draw_rect(rr, Color(0.12, 0.14, 0.16, 0.9))
+			draw_rect(rr, Color(0.3, 1.0, 0.5, 0.3), false, 1.0)
 		draw_rect(r, Color(0.3, 1.0, 0.5, 0.8), false, 2.0)
-		var s := size.x / room.x
-		var w2m := func(wpos: Vector2) -> Vector2: return (wpos + room / 2.0) * s
 		for pd in get_tree().get_nodes_in_group("extract_pad"):
-			var c: Vector2 = w2m.call((pd as Node2D).global_position)
+			var c: Vector2 = _w2m((pd as Node2D).global_position)
 			var pulse := 5.0 + 2.0 * sin(Time.get_ticks_msec() / 300.0)
 			draw_circle(c, pulse, Color(0.3, 1.0, 0.5, 0.9))
+		for ck in get_tree().get_nodes_in_group("chests"):
+			if not ((ck as Node).get_meta("opened") as bool):
+				draw_circle(_w2m((ck as Node2D).global_position), 3.0, Color(1.0, 0.75, 0.2, 0.9))
 		for pk in get_tree().get_nodes_in_group("pickups"):
-			draw_circle(w2m.call((pk as Node2D).global_position), 2.5, Color(1.0, 0.85, 0.2, 0.9))
+			draw_circle(_w2m((pk as Node2D).global_position), 2.5, Color(1.0, 0.85, 0.2, 0.9))
 		for e in get_tree().get_nodes_in_group("infected"):
 			if not (e as Node).get("dead"):
-				draw_circle(w2m.call((e as Node2D).global_position), 3.0, Color(1.0, 0.25, 0.25, 0.9))
+				var col := Color(1.0, 0.25, 0.25, 0.9)
+				if (e as Node).get("is_boss") as bool:
+					col = Color(1.0, 0.0, 0.0, 1.0)
+				draw_circle(_w2m((e as Node2D).global_position), 3.0, col)
 		var pl := get_tree().get_first_node_in_group("player")
 		if pl:
-			draw_circle(w2m.call((pl as Node2D).global_position), 4.5, Color.WHITE)
+			draw_circle(_w2m((pl as Node2D).global_position), 4.5, Color.WHITE)
 
 func _ready() -> void:
 	# dungeon vignette (drawn behind everything)
@@ -66,28 +83,7 @@ func _ready() -> void:
 	vig.stretch_mode = TextureRect.STRETCH_SCALE
 	vig.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(vig)
-	hp_bar = _bar(Vector2(24, 24), Vector2(300, 28), Color(0.85, 0.2, 0.2))
-	inf_bar = _bar(Vector2(24, 60), Vector2(300, 28), Color(0.25, 1.0, 0.42))
-	inf_label = _label(Vector2(24, 92), 22, "INFECTION 0%")
-	inf_label.add_theme_color_override("font_color", Color(0.35, 1.0, 0.5))
-	scrap_label = _label(Vector2(24, 124), 24, "SCRAP 0")
-	lvl_label = _label(Vector2(24, 156), 22, "LV 1")
-	xp_bar = _bar(Vector2(92, 160), Vector2(232, 18), Color(0.6, 0.4, 1.0))
-	floor_label = _label(Vector2(340, 24), 30, "DEPTH 1")
-	toast_label = _label(Vector2(110, 120), 34, "")
-	toast_label.visible = false
-	minimap = Minimap.new()
-	minimap.position = Vector2(528, 24)
-	minimap.size = Vector2(168, 168)
-	add_child(minimap)
-	surge_btn = _power_btn(Vector2(430, 870), "SURGE", Color(0.2, 0.7, 1.0), Vector2(140, 100))
-	frenzy_btn = _power_btn(Vector2(430, 985), "FRENZY", Color(1.0, 0.45, 0.2), Vector2(140, 100))
-	sense_btn = _power_btn(Vector2(430, 1100), "SENSE", Color(0.3, 1.0, 1.0), Vector2(140, 100))
-	atk_btn = _power_btn(Vector2(585, 990), "ATTACK", Color(1.0, 0.85, 0.2), Vector2(125, 175))
-	surge_btn.pressed.connect(func(): if player: player.try_surge())
-	frenzy_btn.pressed.connect(func(): if player: player.try_frenzy())
-	sense_btn.pressed.connect(func(): if player: player.try_sense())
-	atk_btn.pressed.connect(func(): if player and not player.dead: player.attack())
+	# joystick visuals first so buttons always draw on top of them
 	joy_base = Sprite2D.new()
 	joy_base.texture = load("res://assets/joy_base.png")
 	joy_base.modulate.a = 0.55
@@ -98,6 +94,34 @@ func _ready() -> void:
 	joy_knob.modulate.a = 0.8
 	joy_knob.visible = false
 	add_child(joy_knob)
+	hp_bar = _bar(Vector2(24, 24), Vector2(300, 28), Color(0.85, 0.2, 0.2))
+	inf_bar = _bar(Vector2(24, 60), Vector2(300, 28), Color(0.25, 1.0, 0.42))
+	inf_label = _label(Vector2(24, 92), 22, "INFECTION 0%")
+	inf_label.add_theme_color_override("font_color", Color(0.35, 1.0, 0.5))
+	scrap_label = _label(Vector2(24, 124), 24, "SCRAP 0")
+	lvl_label = _label(Vector2(24, 156), 22, "LV 1")
+	xp_bar = _bar(Vector2(92, 160), Vector2(232, 18), Color(0.6, 0.4, 1.0))
+	floor_label = _label(Vector2(340, 24), 30, "DEPTH 1")
+	boss_label = _label(Vector2(295, 66), 24, "THE WARDEN")
+	boss_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
+	boss_label.visible = false
+	boss_bar = _bar(Vector2(210, 100), Vector2(300, 22), Color(0.75, 0.12, 0.12))
+	boss_bar.visible = false
+	toast_label = _label(Vector2(110, 240), 34, "")
+	toast_label.visible = false
+	minimap = Minimap.new()
+	minimap.position = Vector2(528, 24)
+	minimap.size = Vector2(168, 168)
+	add_child(minimap)
+	surge_btn = _power_btn(Vector2(430, 870), "SURGE", Color(0.2, 0.7, 1.0), Vector2(140, 100), 16)
+	frenzy_btn = _power_btn(Vector2(430, 985), "FRENZY", Color(1.0, 0.45, 0.2), Vector2(140, 100), 16)
+	sense_btn = _power_btn(Vector2(430, 1100), "SENSE", Color(0.3, 1.0, 1.0), Vector2(140, 100), 16)
+	atk_btn = _power_btn(Vector2(585, 990), "ATTACK", Color(1.0, 0.85, 0.2), Vector2(125, 175), 60)
+	atk_btn.add_theme_font_size_override("font_size", 28)
+	surge_btn.pressed.connect(func(): if player: player.try_surge())
+	frenzy_btn.pressed.connect(func(): if player: player.try_frenzy())
+	sense_btn.pressed.connect(func(): if player: player.try_sense())
+	atk_btn.pressed.connect(func(): if player and not player.dead: player.attack())
 	channel_label = _label(Vector2(210, 180), 26, "EXTRACTING...")
 	channel_label.add_theme_color_override("font_color", Color(0.35, 1.0, 0.5))
 	channel_label.visible = false
@@ -137,21 +161,31 @@ func _label(pos: Vector2, fsize: int, text: String) -> Label:
 	add_child(l)
 	return l
 
-func _power_btn(pos: Vector2, text: String, color: Color, bsize := Vector2(150, 110)) -> Button:
+func _btn_style(color: Color, radius: int) -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = Color(0.04, 0.05, 0.07, 0.88)
+	s.border_color = color
+	s.set_border_width_all(3)
+	s.set_corner_radius_all(radius)
+	return s
+
+func _power_btn(pos: Vector2, text: String, color: Color, bsize := Vector2(150, 110), radius := 14) -> Button:
 	var b := Button.new()
 	b.position = pos
 	b.size = bsize
 	b.text = text
 	b.add_theme_font_size_override("font_size", 24)
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0, 0, 0, 0.55)
-	sb.border_color = color
-	sb.set_border_width_all(3)
-	sb.set_corner_radius_all(14)
-	b.add_theme_stylebox_override("normal", sb)
-	var sb2 := sb.duplicate() as StyleBoxFlat
-	sb2.bg_color = Color(color.r * 0.3, color.g * 0.3, color.b * 0.3, 0.7)
-	b.add_theme_stylebox_override("pressed", sb2)
+	b.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
+	b.add_theme_color_override("font_pressed_color", Color.WHITE)
+	b.add_theme_color_override("font_disabled_color", Color(0.5, 0.5, 0.5))
+	b.add_theme_stylebox_override("normal", _btn_style(color, radius))
+	b.add_theme_stylebox_override("hover", _btn_style(color, radius))
+	var pr := _btn_style(color, radius)
+	pr.bg_color = Color(color.r * 0.4, color.g * 0.4, color.b * 0.4, 0.95)
+	b.add_theme_stylebox_override("pressed", pr)
+	var dis := _btn_style(Color(0.35, 0.35, 0.35), radius)
+	b.add_theme_stylebox_override("disabled", dis)
+	b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	add_child(b)
 	return b
 
@@ -178,9 +212,20 @@ func bind(p: CharacterBody2D) -> void:
 func set_floor(n: int) -> void:
 	floor_label.text = "DEPTH %d" % n
 
-func set_room(r: Vector2) -> void:
-	room_size = r
-	minimap.room = r
+func set_dungeon(rooms: Array) -> void:
+	minimap.rooms = rooms
+	var mn := Vector2(INF, INF)
+	var mx := Vector2(-INF, -INF)
+	for r in rooms:
+		var c: Vector2 = (r as Dictionary)["center"]
+		mn = mn.min(c - Vector2(360, 360))
+		mx = mx.max(c + Vector2(360, 360))
+	minimap.world_rect = Rect2(mn, mx - mn)
+
+func set_boss(b: Node) -> void:
+	boss_ref = b
+	boss_bar.visible = b != null
+	boss_label.visible = b != null
 
 func show_toast(t: String) -> void:
 	toast_label.text = t
@@ -271,6 +316,12 @@ func _process(delta: float) -> void:
 	hp_bar.value = player.hp
 	inf_bar.value = player.infection
 	inf_label.text = "INFECTION %d%%" % int(player.infection)
+	if boss_ref != null:
+		if not is_instance_valid(boss_ref) or (boss_ref.get("dead") as bool):
+			set_boss(null)
+		else:
+			boss_bar.max_value = float(boss_ref.get("max_hp"))
+			boss_bar.value = float(boss_ref.get("hp"))
 	if player.infection > 75.0:
 		inf_label.add_theme_color_override("font_color", Color(1.0, 0.35, 0.35))
 	else:

@@ -10,12 +10,16 @@ var hud: CanvasLayer
 var floor_node: Node2D
 var floor_num := 1
 var rng := RandomNumberGenerator.new()
-var room := Vector2(2100, 2100)
-var pad: Area2D
 var channeling := false
 var channel_t := 0.0
 var _tick_t := 0.0
 const CHANNEL_NEED := 3.0
+const CELL := 720.0
+const DOOR_GAP := 180.0
+var dungeon_rooms: Array = []
+var boss: Node = null
+const WEAPON_NAMES := ["WORN SHIV", "RUSTY BLADE", "HUNTER'S EDGE", "PLAGUEBANE"]
+var pad: Area2D
 var joy_id := -1
 var joy_origin := Vector2.ZERO
 
@@ -69,9 +73,12 @@ func _add(action: String, keys: Array) -> void:
 		if not InputMap.action_has_event(action, ev):
 			InputMap.action_add_event(action, ev)
 
+func _to_canvas(p: Vector2) -> Vector2:
+	# screen pixels -> canvas units (they only match on desktop; phones scale)
+	return get_viewport().get_canvas_transform().affine_inverse() * p
+
 func start_run() -> void:
 	floor_num = 1
-	room = Vector2(2100, 2100)
 	build_floor()
 
 func build_floor() -> void:
@@ -80,55 +87,42 @@ func build_floor() -> void:
 		floor_node.queue_free()
 	channeling = false
 	channel_t = 0.0
+	boss = null
+	hud.set_boss(null)
 	var f := Node2D.new()
 	f.name = "Floor"
 	add_child(f)
 	floor_node = f
-	# tiles
+	_gen_dungeon()
 	var tile_tex := load("res://assets/floor_tile.png") as Texture2D
-	var n := int(room.x / 640.0) + 1
-	for ix in range(n):
-		for iy in range(n):
-			var sp := Sprite2D.new()
-			sp.texture = tile_tex
-			sp.scale = Vector2(640.0, 640.0) / tile_tex.get_size()
-			sp.position = Vector2(ix * 640.0 + 320.0, iy * 640.0 + 320.0) - room / 2.0
-			sp.modulate = Color(0.42, 0.44, 0.48)
-			f.add_child(sp)
-	# border walls
-	_wall(f, Vector2(0, -room.y / 2), Vector2(room.x + 200, 100))
-	_wall(f, Vector2(0, room.y / 2), Vector2(room.x + 200, 100))
-	_wall(f, Vector2(-room.x / 2, 0), Vector2(100, room.y + 200))
-	_wall(f, Vector2(room.x / 2, 0), Vector2(100, room.y + 200))
-	# interior obstacles
 	var wall_tex := load("res://assets/wall_block.png") as Texture2D
-	var rub_tex := load("res://assets/rubble.png") as Texture2D
 	var door_tex := load("res://assets/door.png") as Texture2D
-	for i in range(4 + floor_num):
-		var p := _open_spot(f, 300.0)
-		if i % 3 == 0:
-			_wall(f, p, Vector2(420, 420), wall_tex)
-		else:
-			var d := Sprite2D.new()
-			d.texture = rub_tex if i % 2 == 0 else door_tex
-			d.position = p
-			d.scale = Vector2(0.7, 0.7)
-			f.add_child(d)
-	# player
+	for r in dungeon_rooms:
+		var c: Vector2 = r["center"]
+		var sp := Sprite2D.new()
+		sp.texture = tile_tex
+		sp.scale = Vector2(CELL, CELL) / tile_tex.get_size()
+		sp.position = c
+		sp.modulate = Color(0.42, 0.44, 0.48)
+		f.add_child(sp)
+		_build_room_walls(f, r, wall_tex, door_tex)
+	# player in entrance room
+	var entrance: Dictionary = _room_by_type("entrance")
 	player = player_scene.instantiate()
-	player.position = Vector2(-room.x / 2 + 260, room.y / 2 - 260)
+	player.position = entrance["center"]
 	f.add_child(player)
 	player.died.connect(_on_player_died.bind(false))
 	player.turned.connect(_on_player_died.bind(true))
 	player.sensed.connect(func(): reveal_pickups(4.0))
 	player.leveled_up.connect(func(lv: int): hud.show_toast("LEVEL %d" % lv))
 	hud.bind(player)
-	# extraction pad far corner
+	# extraction pad in farthest room
+	var ext: Dictionary = _room_by_type("extraction")
 	pad = Area2D.new()
 	pad.add_to_group("extract_pad")
 	pad.collision_layer = 16
 	pad.collision_mask = 1
-	pad.position = Vector2(room.x / 2 - 320, -room.y / 2 + 320)
+	pad.position = ext["center"]
 	var ps := Sprite2D.new()
 	ps.texture = load("res://assets/extract_pad.png")
 	ps.scale = Vector2(0.6, 0.6)
@@ -141,15 +135,25 @@ func build_floor() -> void:
 	f.add_child(pad)
 	pad.body_entered.connect(_on_pad_enter)
 	pad.body_exited.connect(_on_pad_exit)
-	# infected
-	for i in range(mini(3 + floor_num, 9)):
-		spawn_infected(_open_spot(f, 500.0))
-	# loot
+	# infected in combat rooms
+	for r in dungeon_rooms:
+		if r["type"] == "combat":
+			var n := 1 + mini(floor_num / 2, 3)
+			for i in range(n):
+				spawn_infected(_room_spot(r, 180.0))
+	# treasure chest
+	var tr: Dictionary = _room_by_type("treasure")
+	if not tr.is_empty():
+		_spawn_chest(tr["center"])
+	# scatter loot
 	for i in range(5):
-		spawn_pickup("scrap", _open_spot(f, 200.0))
+		spawn_pickup("scrap", _any_spot(200.0))
 	for i in range(2):
-		spawn_pickup("suppressant", _open_spot(f, 200.0))
-	spawn_pickup("medkit", _open_spot(f, 200.0))
+		spawn_pickup("suppressant", _any_spot(200.0))
+	spawn_pickup("medkit", _any_spot(200.0))
+	# boss every 3rd depth guards the pad
+	if floor_num % 3 == 0:
+		_spawn_boss(ext["center"] + Vector2(0, -170))
 	# spawner timer
 	var t := Timer.new()
 	t.name = "Spawner"
@@ -158,32 +162,191 @@ func build_floor() -> void:
 	t.timeout.connect(_on_spawn_tick)
 	f.add_child(t)
 	hud.set_floor(floor_num)
-	hud.set_room(room)
+	hud.set_dungeon(dungeon_rooms)
 
-func _wall(parent: Node, pos: Vector2, size: Vector2, tex: Texture2D = null) -> void:
+func _gen_dungeon() -> void:
+	dungeon_rooms.clear()
+	var gw := 3 if floor_num < 3 else 4
+	var gh := 3
+	var target := mini(5 + floor_num, gw * gh)
+	var dirs := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	var cell_to_idx := {}
+	var door_map := {}
+	var cur := Vector2i(0, 0)
+	cell_to_idx[cur] = 0
+	door_map[cur] = []
+	var guard := 0
+	while cell_to_idx.size() < target and guard < 300:
+		guard += 1
+		var d: Vector2i = dirs[rng.randi() % 4]
+		var nxt := Vector2i(cur.x + d.x, cur.y + d.y)
+		if nxt.x < 0 or nxt.y < 0 or nxt.x >= gw or nxt.y >= gh:
+			continue
+		if not cell_to_idx.has(nxt):
+			cell_to_idx[nxt] = cell_to_idx.size()
+			door_map[nxt] = []
+		if not (door_map[cur] as Array).has(d):
+			(door_map[cur] as Array).append(d)
+			(door_map[nxt] as Array).append(Vector2i(-d.x, -d.y))
+		cur = nxt
+	for cell in cell_to_idx.keys():
+		var wx := (float(cell.x) - float(gw - 1) / 2.0) * CELL
+		var wy := (float(cell.y) - float(gh - 1) / 2.0) * CELL
+		dungeon_rooms.append({
+			"cell": cell, "center": Vector2(wx, wy),
+			"type": "combat", "doors": door_map[cell],
+		})
+	dungeon_rooms.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return (cell_to_idx[a["cell"]] as int) < (cell_to_idx[b["cell"]] as int))
+	dungeon_rooms[0]["type"] = "entrance"
+	# BFS from entrance: farthest room holds the extraction pad
+	var dist := {Vector2i(0, 0): 0}
+	var queue: Array = [Vector2i(0, 0)]
+	while not queue.is_empty():
+		var c: Vector2i = queue.pop_front()
+		var ri: int = cell_to_idx[c]
+		for d in dungeon_rooms[ri]["doors"]:
+			var nc := Vector2i(c.x + d.x, c.y + d.y)
+			if not dist.has(nc):
+				dist[nc] = (dist[c] as int) + 1
+				queue.append(nc)
+	var far_cell := Vector2i(0, 0)
+	for c in dist.keys():
+		if (dist[c] as int) > (dist[far_cell] as int):
+			far_cell = c
+	dungeon_rooms[cell_to_idx[far_cell]]["type"] = "extraction"
+	var cands: Array = []
+	for i in range(dungeon_rooms.size()):
+		if (dungeon_rooms[i] as Dictionary)["type"] == "combat":
+			cands.append(i)
+	if not cands.is_empty():
+		(dungeon_rooms[cands[rng.randi() % cands.size()]] as Dictionary)["type"] = "treasure"
+
+func _build_room_walls(f: Node, r: Dictionary, wall_tex: Texture2D, door_tex: Texture2D) -> void:
+	var c: Vector2 = r["center"]
+	var dirs := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	for d in dirs:
+		var has_door: bool = (r["doors"] as Array).has(d)
+		var n := Vector2(d)
+		var tang := Vector2(-n.y, n.x)
+		var edge := c + n * (CELL / 2.0)
+		if has_door:
+			var seg_len := (CELL - DOOR_GAP) / 2.0
+			var off := seg_len / 2.0 + DOOR_GAP / 2.0
+			_tiled_wall(f, edge + tang * off, tang, seg_len, wall_tex)
+			_tiled_wall(f, edge - tang * off, tang, seg_len, wall_tex)
+			var ds := Sprite2D.new()
+			ds.texture = door_tex
+			ds.position = edge
+			ds.scale = Vector2(0.28, 0.28)
+			ds.rotation = PI / 2.0 if n.y != 0.0 else 0.0
+			f.add_child(ds)
+		else:
+			_tiled_wall(f, edge, tang, CELL, wall_tex)
+
+func _tiled_wall(f: Node, center: Vector2, tang: Vector2, length: float, tex: Texture2D) -> void:
 	var sb := StaticBody2D.new()
-	sb.position = pos
+	sb.position = center
 	var cs := CollisionShape2D.new()
 	var rect := RectangleShape2D.new()
-	rect.size = size
+	if absf(tang.x) > 0.5:
+		rect.size = Vector2(length, 60.0)
+	else:
+		rect.size = Vector2(60.0, length)
 	cs.shape = rect
 	sb.add_child(cs)
-	if tex:
+	f.add_child(sb)
+	var block := 120.0
+	var n := maxi(1, int(length / block))
+	for i in range(n):
+		var tt := (float(i) + 0.5) / float(n) - 0.5
 		var sp := Sprite2D.new()
 		sp.texture = tex
-		sp.scale = size / tex.get_size()
-		sb.add_child(sp)
-	parent.add_child(sb)
+		sp.scale = Vector2(block, block) / tex.get_size()
+		sp.position = center + tang * (tt * length)
+		sp.modulate = Color(0.5, 0.5, 0.55)
+		f.add_child(sp)
 
-func _open_spot(f: Node, margin: float) -> Vector2:
-	for tries in range(40):
-		var p := Vector2(
-			rng.randf_range(-room.x / 2 + margin, room.x / 2 - margin),
-			rng.randf_range(-room.y / 2 + margin, room.y / 2 - margin))
+func _room_by_type(t: String) -> Dictionary:
+	for r in dungeon_rooms:
+		if (r as Dictionary)["type"] == t:
+			return r
+	return {}
+
+func _room_spot(r: Dictionary, margin: float) -> Vector2:
+	var c: Vector2 = r["center"]
+	for tries in range(30):
+		var p := c + Vector2(rng.randf_range(-1.0, 1.0), rng.randf_range(-1.0, 1.0)) * (CELL / 2.0 - margin)
 		if player and p.distance_to(player.position) < 380.0:
 			continue
 		return p
-	return Vector2.ZERO
+	return c
+
+func _any_spot(margin: float) -> Vector2:
+	if dungeon_rooms.is_empty():
+		return Vector2.ZERO
+	return _room_spot(dungeon_rooms[rng.randi() % dungeon_rooms.size()], margin)
+
+func _spawn_chest(pos: Vector2) -> void:
+	var f := floor_node
+	var ch := Area2D.new()
+	ch.name = "Chest"
+	ch.add_to_group("chests")
+	ch.collision_layer = 0
+	ch.collision_mask = 1
+	ch.position = pos
+	ch.set_meta("opened", false)
+	var sp := Sprite2D.new()
+	sp.name = "Sprite"
+	sp.texture = load("res://assets/chest_closed.png")
+	sp.scale = Vector2(1.4, 1.4)
+	ch.add_child(sp)
+	var shape := CollisionShape2D.new()
+	var circ := CircleShape2D.new()
+	circ.radius = 90.0
+	shape.shape = circ
+	ch.add_child(shape)
+	f.add_child(ch)
+	ch.body_entered.connect(_on_chest_open.bind(ch))
+
+func _on_chest_open(body: Node2D, ch: Area2D) -> void:
+	if not body.is_in_group("player"):
+		return
+	if ch.get_meta("opened") as bool:
+		return
+	ch.set_meta("opened", true)
+	(ch.get_node("Sprite") as Sprite2D).texture = load("res://assets/chest_open.png")
+	Sfx.play("upgrade")
+	hud.show_toast("CHEST LOOTED")
+	var base: Vector2 = ch.global_position
+	var kinds := ["scrap", "scrap", "suppressant", "medkit", "weapon"]
+	for i in range(3):
+		var k: String = kinds[rng.randi() % kinds.size()]
+		spawn_pickup(k, base + Vector2(rng.randf_range(-90.0, 90.0), rng.randf_range(-90.0, 90.0)))
+
+func _spawn_boss(pos: Vector2) -> void:
+	var f := floor_node
+	var e: CharacterBody2D = infected_scene.instantiate()
+	e.position = pos
+	e.setup("brute", floor_num)
+	e.set("is_boss", true)
+	var bhp: int = int(e.get("max_hp")) * 6
+	e.set("max_hp", bhp)
+	e.set("hp", bhp)
+	e.set("touch_damage", float(e.get("touch_damage")) * 1.5)
+	e.set("xp", 150)
+	f.add_child(e)
+	var spr := e.get_node("Sprite") as Node2D
+	spr.scale = spr.scale * 1.5
+	boss = e
+	hud.set_boss(boss)
+	hud.show_toast("THE WARDEN STIRS")
+
+func on_weapon_pickup() -> void:
+	if player and not player.dead:
+		player.damage += 1
+		var nm: String = WEAPON_NAMES[mini(floor_num / 2, 3)]
+		hud.show_toast(nm + "  DMG +1")
 
 func _pick_type() -> String:
 	var r := rng.randf()
@@ -205,10 +368,14 @@ func reveal_pickups(dur: float) -> void:
 		var m := SenseMarker.new()
 		m.life = dur
 		(p as Node2D).add_child(m)
-	if pad and is_instance_valid(pad):
+	for ch in get_tree().get_nodes_in_group("chests"):
 		var m2 := SenseMarker.new()
 		m2.life = dur
-		pad.add_child(m2)
+		(ch as Node2D).add_child(m2)
+	if pad and is_instance_valid(pad):
+		var m3 := SenseMarker.new()
+		m3.life = dur
+		pad.add_child(m3)
 
 func spawn_pickup(kind: String, pos: Vector2) -> void:
 	var f := floor_node
@@ -217,9 +384,17 @@ func spawn_pickup(kind: String, pos: Vector2) -> void:
 	p.position = pos
 	f.add_child(p)
 
-func on_infected_killed(pos: Vector2, xp: int) -> void:
+func on_infected_killed(pos: Vector2, xp: int, was_boss: bool = false) -> void:
 	if player and not player.dead:
 		player.add_xp(xp)
+	if was_boss:
+		hud.show_toast("WARDEN SLAIN")
+		spawn_pickup("weapon", pos + Vector2(-60, 0))
+		spawn_pickup("medkit", pos + Vector2(60, 0))
+		spawn_pickup("suppressant", pos + Vector2(0, 60))
+		for i in range(3):
+			spawn_pickup("scrap", pos + Vector2(rng.randf_range(-100, 100), rng.randf_range(-100, 100)))
+		return
 	var r := rng.randf()
 	if r < 0.55:
 		spawn_pickup("scrap", pos)
@@ -227,15 +402,13 @@ func on_infected_killed(pos: Vector2, xp: int) -> void:
 		spawn_pickup("suppressant", pos)
 	elif r < 0.78:
 		spawn_pickup("medkit", pos)
+	if xp >= 30 and rng.randf() < 0.12:
+		spawn_pickup("weapon", pos + Vector2(40, 0))
 
 func _on_spawn_tick() -> void:
 	var count := get_tree().get_nodes_in_group("infected").size()
 	if count < mini(4 + floor_num, 10) and player and not player.dead:
-		var ang := rng.randf_range(0.0, TAU)
-		var pos: Vector2 = player.position + Vector2(cos(ang), sin(ang)) * 800.0
-		pos.x = clampf(pos.x, -room.x / 2 + 150, room.x / 2 - 150)
-		pos.y = clampf(pos.y, -room.y / 2 + 150, room.y / 2 - 150)
-		spawn_infected(pos)
+		spawn_infected(_any_spot(200.0))
 
 func _on_pad_enter(body: Node2D) -> void:
 	if body.is_in_group("player"):
@@ -284,7 +457,6 @@ func _on_upgrade(u: Dictionary) -> void:
 			player.surge_cost = 11.0
 			player.frenzy_cost = 15.0
 	floor_num += 1
-	room += Vector2(120, 120)
 	build_floor()
 
 func _on_player_died(turned: bool) -> void:
@@ -313,13 +485,13 @@ func _input(event: InputEvent) -> void:
 			player.try_sense()
 	if event is InputEventScreenTouch:
 		var t := event as InputEventScreenTouch
-		var vp := get_viewport().get_visible_rect().size
+		var cpos := _to_canvas(t.position)
 		if t.pressed:
-			if t.position.x < vp.x * 0.5 and joy_id == -1:
+			if cpos.x < 360.0 and joy_id == -1:
 				joy_id = t.index
-				joy_origin = t.position
-				hud.show_joystick(t.position)
-			elif t.position.x >= vp.x * 0.5 and not _on_power_btn(t.position):
+				joy_origin = cpos
+				hud.show_joystick(cpos)
+			elif cpos.x >= 360.0 and not _on_power_btn(cpos):
 				if player and not player.dead:
 					player.attack()
 		else:
@@ -331,7 +503,7 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventScreenDrag:
 		var d := event as InputEventScreenDrag
 		if d.index == joy_id and player:
-			var v := (d.position - joy_origin) / 110.0
+			var v := (_to_canvas(d.position) - joy_origin) / 110.0
 			if v.length() > 1.0:
 				v = v.normalized()
 			player.joystick = v

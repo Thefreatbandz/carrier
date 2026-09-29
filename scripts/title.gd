@@ -38,6 +38,12 @@ func _ready() -> void:
 	prompt.add_theme_color_override("font_color", Color.WHITE)
 	prompt.position = Vector2(190, 1050)
 	add_child(prompt)
+	var ver := Label.new()
+	ver.text = "v0.3"
+	ver.add_theme_font_size_override("font_size", 24)
+	ver.add_theme_color_override("font_color", Color(0.45, 0.5, 0.55))
+	ver.position = Vector2(330, 1210)
+	add_child(ver)
 
 func _process(delta: float) -> void:
 	_t += delta

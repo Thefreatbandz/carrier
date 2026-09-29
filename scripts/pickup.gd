@@ -1,5 +1,5 @@
 extends Area2D
-## Loot pickup: scrap / suppressant / medkit.
+## Loot pickup: scrap / suppressant / medkit / weapon.
 
 @export var kind := "scrap"
 var _t := 0.0
@@ -9,6 +9,7 @@ const TEX := {
 	"scrap": "coin_full",
 	"suppressant": "suppressant",
 	"medkit": "heart",
+	"weapon": "sword",
 }
 
 func _ready() -> void:
@@ -32,5 +33,9 @@ func _on_body(body: Node2D) -> void:
 			body.add_infection(-30.0)
 		"medkit":
 			body.heal(30.0)
+		"weapon":
+			var main := get_tree().get_first_node_in_group("game_main")
+			if main and main.has_method("on_weapon_pickup"):
+				main.on_weapon_pickup()
 	Sfx.play("pickup")
 	queue_free()
