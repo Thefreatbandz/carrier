@@ -12,6 +12,7 @@ const TEX := {
 }
 
 func _ready() -> void:
+	add_to_group("pickups")
 	$Sprite.texture = load("res://assets/%s.png" % TEX.get(kind, "coin_full"))
 	$Sprite.scale = Vector2(0.5, 0.5)
 	_base_y = $Sprite.position.y
@@ -31,4 +32,5 @@ func _on_body(body: Node2D) -> void:
 			body.add_infection(-30.0)
 		"medkit":
 			body.heal(30.0)
+	Sfx.play("pickup")
 	queue_free()

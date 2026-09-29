@@ -14,6 +14,7 @@ var room := Vector2(2100, 2100)
 var pad: Area2D
 var channeling := false
 var channel_t := 0.0
+var _tick_t := 0.0
 const CHANNEL_NEED := 3.0
 var joy_id := -1
 var joy_origin := Vector2.ZERO
@@ -25,7 +26,22 @@ const UPGRADES := [
 	{"name": "CHEAP POWERS", "desc": "Powers cost 25% less"},
 ]
 
+class SenseMarker extends Node2D:
+	var life := 4.0
+	var _t := 0.0
+	func _process(d: float) -> void:
+		_t += d
+		life -= d
+		queue_redraw()
+		if life <= 0.0:
+			queue_free()
+	func _draw() -> void:
+		var a := 0.35 + 0.3 * sin(_t * 8.0)
+		draw_arc(Vector2.ZERO, 36.0, 0.0, TAU, 24, Color(0.3, 1.0, 1.0, a), 7.0)
+		draw_circle(Vector2.ZERO, 6.0, Color(0.3, 1.0, 1.0, a))
+
 func _ready() -> void:
+	add_to_group("game_main")
 	_ensure_input()
 	rng.seed = randi()
 	hud = preload("res://scripts/hud.gd").new()
@@ -42,6 +58,7 @@ func _ensure_input() -> void:
 	_add("atk", [KEY_SPACE])
 	_add("surge", [KEY_Q])
 	_add("frenzy", [KEY_E])
+	_add("sense", [KEY_F])
 
 func _add(action: String, keys: Array) -> void:
 	if not InputMap.has_action(action):
@@ -76,7 +93,7 @@ func build_floor() -> void:
 			sp.texture = tile_tex
 			sp.scale = Vector2(640.0, 640.0) / tile_tex.get_size()
 			sp.position = Vector2(ix * 640.0 + 320.0, iy * 640.0 + 320.0) - room / 2.0
-			sp.modulate = Color(0.55, 0.58, 0.62)
+			sp.modulate = Color(0.42, 0.44, 0.48)
 			f.add_child(sp)
 	# border walls
 	_wall(f, Vector2(0, -room.y / 2), Vector2(room.x + 200, 100))
@@ -103,9 +120,12 @@ func build_floor() -> void:
 	f.add_child(player)
 	player.died.connect(_on_player_died.bind(false))
 	player.turned.connect(_on_player_died.bind(true))
+	player.sensed.connect(func(): reveal_pickups(4.0))
+	player.leveled_up.connect(func(lv: int): hud.show_toast("LEVEL %d" % lv))
 	hud.bind(player)
 	# extraction pad far corner
 	pad = Area2D.new()
+	pad.add_to_group("extract_pad")
 	pad.collision_layer = 16
 	pad.collision_mask = 1
 	pad.position = Vector2(room.x / 2 - 320, -room.y / 2 + 320)
@@ -138,6 +158,7 @@ func build_floor() -> void:
 	t.timeout.connect(_on_spawn_tick)
 	f.add_child(t)
 	hud.set_floor(floor_num)
+	hud.set_room(room)
 
 func _wall(parent: Node, pos: Vector2, size: Vector2, tex: Texture2D = null) -> void:
 	var sb := StaticBody2D.new()
@@ -164,15 +185,30 @@ func _open_spot(f: Node, margin: float) -> Vector2:
 		return p
 	return Vector2.ZERO
 
+func _pick_type() -> String:
+	var r := rng.randf()
+	if floor_num <= 1:
+		return "shambler"
+	if floor_num == 2:
+		return "runner" if r < 0.35 else "shambler"
+	return "brute" if r < 0.2 else ("runner" if r < 0.5 else "shambler")
+
 func spawn_infected(pos: Vector2) -> void:
 	var f := floor_node
 	var e: CharacterBody2D = infected_scene.instantiate()
 	e.position = pos
-	e.max_hp = 3 + floor_num / 2
-	e.hp = e.max_hp
-	e.speed = 95.0 + floor_num * 6.0
-	e.touch_damage = 12.0 + floor_num
+	e.setup(_pick_type(), floor_num)
 	f.add_child(e)
+
+func reveal_pickups(dur: float) -> void:
+	for p in get_tree().get_nodes_in_group("pickups"):
+		var m := SenseMarker.new()
+		m.life = dur
+		(p as Node2D).add_child(m)
+	if pad and is_instance_valid(pad):
+		var m2 := SenseMarker.new()
+		m2.life = dur
+		pad.add_child(m2)
 
 func spawn_pickup(kind: String, pos: Vector2) -> void:
 	var f := floor_node
@@ -181,7 +217,9 @@ func spawn_pickup(kind: String, pos: Vector2) -> void:
 	p.position = pos
 	f.add_child(p)
 
-func on_infected_killed(pos: Vector2) -> void:
+func on_infected_killed(pos: Vector2, xp: int) -> void:
+	if player and not player.dead:
+		player.add_xp(xp)
 	var r := rng.randf()
 	if r < 0.55:
 		spawn_pickup("scrap", pos)
@@ -215,6 +253,10 @@ func _on_pad_exit(body: Node2D) -> void:
 func _process(delta: float) -> void:
 	if channeling and player and not player.dead:
 		channel_t += delta
+		_tick_t += delta
+		if _tick_t >= 0.5:
+			_tick_t = 0.0
+			Sfx.play("extract_tick")
 		hud.set_channel(channel_t / CHANNEL_NEED)
 		if channel_t >= CHANNEL_NEED:
 			channeling = false
@@ -229,6 +271,7 @@ func floor_cleared() -> void:
 
 func _on_upgrade(u: Dictionary) -> void:
 	get_tree().paused = false
+	Sfx.play("upgrade")
 	match u["name"]:
 		"MAX HP +20":
 			player.max_hp += 20.0
@@ -246,13 +289,13 @@ func _on_upgrade(u: Dictionary) -> void:
 
 func _on_player_died(turned: bool) -> void:
 	get_tree().paused = true
+	Sfx.play("turn" if turned else "hurt")
 	hud.show_death(turned, floor_num, player.scrap)
 
 func _on_power_btn(pos: Vector2) -> bool:
-	if hud.surge_btn.get_global_rect().has_point(pos):
-		return true
-	if hud.frenzy_btn.get_global_rect().has_point(pos):
-		return true
+	for b in [hud.surge_btn, hud.frenzy_btn, hud.sense_btn, hud.atk_btn]:
+		if b and b.get_global_rect().has_point(pos):
+			return true
 	return false
 
 func _input(event: InputEvent) -> void:
@@ -265,6 +308,9 @@ func _input(event: InputEvent) -> void:
 	if event.is_action_pressed("frenzy"):
 		if player:
 			player.try_frenzy()
+	if event.is_action_pressed("sense"):
+		if player:
+			player.try_sense()
 	if event is InputEventScreenTouch:
 		var t := event as InputEventScreenTouch
 		var vp := get_viewport().get_visible_rect().size

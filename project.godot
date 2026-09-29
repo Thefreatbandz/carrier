@@ -8,6 +8,10 @@ config/description="Infection-meter tower extraction RPG. Ride the infection or 
 run/main_scene="res://scenes/title.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 
+[autoload]
+
+Sfx="*res://scripts/sfx.gd"
+
 [display]
 
 window/size/viewport_width=720
