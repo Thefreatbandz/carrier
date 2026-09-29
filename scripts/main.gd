@@ -27,12 +27,17 @@ var pad_glow: Sprite2D = null
 var _hitstop := 0.0                     # hit-stop timer (unscaled)
 var _trauma := 0.0                      # screen-shake trauma 0..1
 var _glow_t := 0.0
+var run := {}                           # run state: survives floor rebuilds
+var atk_touch_id := -1                  # right-half tap holding attack
+var last_tap_msec := 0                  # double-tap dodge tracking
 
 const UPGRADES := [
 	{"name": "MAX HP +20", "desc": "Sturdier body"},
 	{"name": "DAMAGE +1", "desc": "Heavier swings"},
 	{"name": "SPEED +10%", "desc": "Lighter feet"},
 	{"name": "CHEAP POWERS", "desc": "Powers cost 25% less"},
+	{"name": "SWIFT DODGE", "desc": "Dodge recharges 30% faster"},
+	{"name": "HEAVY HITTER", "desc": "Charged heavies hit 40% harder"},
 ]
 
 class SenseMarker extends Node2D:
@@ -65,6 +70,7 @@ func _ensure_input() -> void:
 	_add("mv_up", [KEY_W, KEY_UP])
 	_add("mv_down", [KEY_S, KEY_DOWN])
 	_add("atk", [KEY_SPACE])
+	_add("dodge", [KEY_SHIFT])
 	_add("surge", [KEY_Q])
 	_add("frenzy", [KEY_E])
 	_add("sense", [KEY_F])
@@ -85,7 +91,49 @@ func _to_canvas(p: Vector2) -> Vector2:
 func start_run() -> void:
 	Engine.time_scale = 1.0
 	floor_num = 1
+	run = _default_run()
 	build_floor()
+
+func _default_run() -> Dictionary:
+	return {
+		"max_hp": 100.0, "hp": 100.0, "damage": 1, "move_mult": 1.0,
+		"surge_cost": 15.0, "frenzy_cost": 20.0, "scrap": 0,
+		"level": 1, "xp": 0, "xp_next": 45, "infection": 0.0,
+		"dodge_cd_max": 1.1, "heavy_mult": 2.5,
+	}
+
+func _snapshot_run() -> void:
+	# copy the living player's state before the floor (and player) is rebuilt
+	if player == null or not is_instance_valid(player):
+		return
+	run["max_hp"] = player.max_hp
+	run["hp"] = player.hp
+	run["damage"] = player.damage
+	run["move_mult"] = player.move_mult
+	run["surge_cost"] = player.surge_cost
+	run["frenzy_cost"] = player.frenzy_cost
+	run["scrap"] = player.scrap
+	run["level"] = player.level
+	run["xp"] = player.xp
+	run["xp_next"] = player.xp_next
+	run["infection"] = player.infection
+	run["dodge_cd_max"] = player.dodge_cd_max
+	run["heavy_mult"] = player.heavy_mult
+
+func _apply_run(p: Node) -> void:
+	p.max_hp = float(run["max_hp"])
+	p.hp = float(run["hp"])
+	p.damage = int(run["damage"])
+	p.move_mult = float(run["move_mult"])
+	p.surge_cost = float(run["surge_cost"])
+	p.frenzy_cost = float(run["frenzy_cost"])
+	p.scrap = int(run["scrap"])
+	p.level = int(run["level"])
+	p.xp = int(run["xp"])
+	p.xp_next = int(run["xp_next"])
+	p.infection = float(run["infection"])
+	p.dodge_cd_max = float(run["dodge_cd_max"])
+	p.heavy_mult = float(run["heavy_mult"])
 
 func build_floor() -> void:
 	# clear old floor (deferred; new one tracked via floor_node)
@@ -133,6 +181,7 @@ func build_floor() -> void:
 	# player in entrance room
 	var entrance: Dictionary = _room_by_type("entrance")
 	player = player_scene.instantiate()
+	_apply_run(player)  # upgrades/scrap/xp/infection survive the descent
 	player.position = entrance["center"]
 	f.add_child(player)
 	cam = player.get_node("Camera") as Camera2D
@@ -502,19 +551,27 @@ func floor_cleared() -> void:
 func _on_upgrade(u: Dictionary) -> void:
 	get_tree().paused = false
 	Sfx.play("upgrade")
+	_snapshot_run()
 	match u["name"]:
 		"MAX HP +20":
-			player.max_hp += 20.0
-			player.heal(20.0)
+			run["max_hp"] = float(run["max_hp"]) + 20.0
+			run["hp"] = minf(float(run["max_hp"]), float(run["hp"]) + 20.0)
 		"DAMAGE +1":
-			player.damage += 1
+			run["damage"] = int(run["damage"]) + 1
 		"SPEED +10%":
-			player.move_mult *= 1.1
+			run["move_mult"] = float(run["move_mult"]) * 1.1
 		"CHEAP POWERS":
-			player.surge_cost = 11.0
-			player.frenzy_cost = 15.0
+			run["surge_cost"] = 11.0
+			run["frenzy_cost"] = 15.0
+		"SWIFT DODGE":
+			run["dodge_cd_max"] = float(run["dodge_cd_max"]) * 0.7
+		"HEAVY HITTER":
+			run["heavy_mult"] = float(run["heavy_mult"]) * 1.4
+	# descend: catch your breath (+25% HP), but the infection comes with you
+	run["hp"] = minf(float(run["max_hp"]), float(run["hp"]) + float(run["max_hp"]) * 0.25)
 	floor_num += 1
 	build_floor()
+	hud.show_toast("DEPTH %d — upgrades kept" % floor_num)
 
 func hitstop(dur: float) -> void:
 	Engine.time_scale = 0.05
@@ -522,6 +579,75 @@ func hitstop(dur: float) -> void:
 
 func shake(amount: float) -> void:
 	_trauma = minf(1.0, _trauma + amount)
+
+# ---------------- juice: ghosts, sparks, dust, trails ----------------
+func fx_ghost(p: Node2D) -> void:
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var spr := p.get_node_or_null("Sprite") as AnimatedSprite2D
+	if spr == null:
+		return
+	var g := Sprite2D.new()
+	g.texture = spr.sprite_frames.get_frame_texture(spr.animation, spr.frame)
+	g.global_position = p.global_position
+	g.scale = spr.global_scale
+	g.flip_h = spr.flip_h
+	g.modulate = Color(0.45, 1.0, 0.55, 0.55)
+	g.z_index = 1  # above floor tiles, trails behind the dodging player
+	floor_node.add_child(g)
+	var tw := create_tween()
+	tw.tween_property(g, "modulate:a", 0.0, 0.3)
+	tw.tween_callback(g.queue_free)
+
+func fx_sparks(pos: Vector2, color: Color = Color(1, 1, 1)) -> void:
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var tex := load("res://assets/spark.png") as Texture2D
+	for i in range(8):
+		var s := Sprite2D.new()
+		s.texture = tex
+		s.position = pos
+		s.modulate = color
+		var a := rng.randf() * TAU
+		var d := Vector2(cos(a), sin(a)) * rng.randf_range(120.0, 320.0)
+		floor_node.add_child(s)
+		var tw := create_tween().set_parallel()
+		tw.tween_property(s, "position", pos + d, 0.35).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tw.tween_property(s, "modulate:a", 0.0, 0.35)
+		tw.chain().tween_callback(s.queue_free)
+
+func fx_dust(pos: Vector2, n: int = 3) -> void:
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var tex := load("res://assets/dust.png") as Texture2D
+	for i in range(n):
+		var s := Sprite2D.new()
+		s.texture = tex
+		s.position = pos + Vector2(rng.randf_range(-24, 24), rng.randf_range(-8, 8))
+		s.modulate = Color(0.8, 0.78, 0.75, 0.5)
+		var sc := rng.randf_range(0.7, 1.4) * 0.5
+		s.scale = Vector2(sc, sc)
+		floor_node.add_child(s)
+		var tw := create_tween().set_parallel()
+		tw.tween_property(s, "scale", s.scale * 2.2, 0.4)
+		tw.tween_property(s, "modulate:a", 0.0, 0.4)
+		tw.chain().tween_callback(s.queue_free)
+
+func fx_trail(pos: Vector2, angle: float, big: bool) -> void:
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var s := Sprite2D.new()
+	s.texture = load("res://assets/trail_arc.png")
+	s.position = pos
+	s.rotation = angle
+	var sc := 1.1 if big else 0.8
+	s.scale = Vector2(sc, sc)
+	s.modulate = Color(0.7, 1.0, 0.75, 0.85)
+	floor_node.add_child(s)
+	var tw := create_tween().set_parallel()
+	tw.tween_property(s, "rotation", angle + 1.2, 0.18)
+	tw.tween_property(s, "modulate:a", 0.0, 0.18)
+	tw.chain().tween_callback(s.queue_free)
 
 func _on_player_died(turned: bool) -> void:
 	Engine.time_scale = 1.0
@@ -548,16 +674,30 @@ func _input(event: InputEvent) -> void:
 	if event.is_action_pressed("sense"):
 		if player:
 			player.try_sense()
+	if event.is_action_pressed("dodge"):
+		if player:
+			player.try_dodge(player.last_move_dir)
 	if event is InputEventScreenTouch:
 		var t := event as InputEventScreenTouch
 		var cpos := _to_canvas(t.position)
 		if t.pressed:
-			if cpos.x < 360.0 and joy_id == -1:
-				joy_id = t.index
-				joy_origin = cpos
-				hud.show_joystick(cpos)
+			if cpos.x < 360.0:
+				# double-tap left half = dodge roll
+				var now := Time.get_ticks_msec()
+				if now - last_tap_msec < 350:
+					if player:
+						player.try_dodge(player.last_move_dir)
+					last_tap_msec = 0
+				else:
+					last_tap_msec = now
+				if joy_id == -1:
+					joy_id = t.index
+					joy_origin = cpos
+					hud.show_joystick(cpos)
 			elif cpos.x >= 360.0 and not _on_power_btn(cpos):
 				if player and not player.dead:
+					atk_touch_id = t.index
+					player.touch_atk_held = true
 					player.attack()
 		else:
 			if t.index == joy_id:
@@ -565,6 +705,10 @@ func _input(event: InputEvent) -> void:
 				if player:
 					player.joystick = Vector2.ZERO
 				hud.hide_joystick()
+			if t.index == atk_touch_id:
+				atk_touch_id = -1
+				if player:
+					player.touch_atk_held = false
 	elif event is InputEventScreenDrag:
 		var d := event as InputEventScreenDrag
 		if d.index == joy_id and player:

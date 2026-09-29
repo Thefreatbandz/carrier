@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://cuw1hnikecmc5"
-path="res://.godot/imported/index.icon.png-a9d2f4f7433eeddc29dad75f5e7f8710.ctex"
+uid="uid://di0ja185u4475"
+path="res://.godot/imported/trail_arc.png-f91b5461cbb3aa0055840c1d378f5ac9.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://build/web/index.icon.png"
-dest_files=["res://.godot/imported/index.icon.png-a9d2f4f7433eeddc29dad75f5e7f8710.ctex"]
+source_file="res://assets/trail_arc.png"
+dest_files=["res://.godot/imported/trail_arc.png-f91b5461cbb3aa0055840c1d378f5ac9.ctex"]
 
 [params]
 

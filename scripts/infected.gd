@@ -28,7 +28,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 10.0 + floor_num
 			xp = 14
 			_base = "e_runner"
-			_spr_scale = 0.45
+			_spr_scale = 0.55
 			_hbox = Vector2(0.85, 0.85)
 		"brute":
 			max_hp = 9 + floor_num
@@ -36,7 +36,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 22.0 + floor_num
 			xp = 30
 			_base = "e_brute"
-			_spr_scale = 0.775
+			_spr_scale = 0.9
 			_hbox = Vector2(1.6, 1.5)
 		_:  # shambler
 			max_hp = 3 + floor_num / 2
@@ -44,7 +44,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 12.0 + floor_num
 			xp = 10
 			_base = "e_shambler"
-			_spr_scale = 0.5
+			_spr_scale = 0.6
 			_hbox = Vector2.ONE
 	hp = max_hp
 
@@ -68,6 +68,11 @@ func _ready() -> void:
 	$Sprite.play("walk")
 	$Sprite.scale = Vector2(_spr_scale, _spr_scale)
 	$CollisionShape2D.scale = _hbox
+	var sh := Sprite2D.new()
+	sh.texture = load("res://assets/shadow.png")
+	sh.position = Vector2(0, 128.0 * _spr_scale + 4.0)
+	add_child(sh)
+	move_child(sh, 0)
 
 func _add_frames(sf: SpriteFrames, name: String, files: Array, fps: float, loop: bool) -> void:
 	sf.add_animation(name)
@@ -141,6 +146,9 @@ func take_damage(amount: int) -> void:
 		if away.length() > 1.0:
 			_knockback = away.normalized() * 300.0
 	Sfx.play("hit")
+	var main := _main()
+	if main:
+		main.fx_sparks(global_position + Vector2(0, -30), Color(0.6, 1.0, 0.6))
 	if hp <= 0:
 		_die()
 
@@ -155,6 +163,8 @@ func _die() -> void:
 	if main:
 		main.hitstop(0.09)
 		main.shake(0.3)
+		main.fx_sparks(global_position + Vector2(0, -40), Color(0.4, 1.0, 0.5))
+		main.fx_dust(global_position + Vector2(0, 40), 4)
 		main.call("on_infected_killed", global_position, xp, is_boss)
 	var tw := create_tween()
 	tw.tween_interval(0.5)          # death pose reads clearly

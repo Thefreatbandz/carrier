@@ -160,6 +160,23 @@ var _lunge := Vector2.ZERO       # attack lunge offset
 var _kb := Vector2.ZERO          # knockback velocity (decays)
 var _attack_t := 0.0             # attack anim lock timer
 var _hurt_t := 0.0               # hurt anim lock timer
+# --- dodge roll ---
+var dodge_cd := 0.0
+var dodge_t := 0.0
+var dodge_dir := Vector2.DOWN
+var dodge_cd_max := 1.1
+var last_move_dir := Vector2.DOWN
+var _ghost_t := 0.0
+# --- charged heavy attack (hold attack) ---
+var touch_atk_held := false
+var heavy_mult := 2.5
+var _hold_t := 0.0
+var _heavy_armed := true
+# --- juice ---
+var _dust_t := 0.0
+var _squash_t := 0.0
+var _squash := Vector2.ONE
+var _base_scale := Vector2(0.62, 0.62)  # v3 art is bigger, reads on phone
 
 var slash_scene := preload("res://scenes/slash.tscn")
 
@@ -171,13 +188,18 @@ func _ready() -> void:
 			["p_%s_idle_0" % dir, "p_%s_idle_1" % dir], 4.0, true)
 		_add_frames(sf, dir + "_walk",
 			["p_%s_walk_0" % dir, "p_%s_walk_1" % dir,
-			 "p_%s_walk_2" % dir, "p_%s_walk_3" % dir], 10.0, true)
-	_add_frames(sf, "attack", ["p_attack_0", "p_attack_1", "p_attack_2"], 16.0, false)
+			 "p_%s_walk_2" % dir, "p_%s_walk_3" % dir], 12.0, true)
+	_add_frames(sf, "attack", ["p_attack_0", "p_attack_1", "p_attack_2"], 20.0, false)
 	_add_frames(sf, "hurt", ["p_hurt_0"], 8.0, false)
 	_add_frames(sf, "death", ["p_death_0", "p_death_1"], 6.0, false)
 	$Sprite.frames = sf
-	$Sprite.scale = Vector2(0.5, 0.5)  # HD art is 2x, keep on-screen size
+	$Sprite.scale = _base_scale
 	$Sprite.play("down_idle")
+	var sh := Sprite2D.new()
+	sh.texture = load("res://assets/shadow.png")
+	sh.position = Vector2(0, 86)
+	add_child(sh)
+	move_child(sh, 0)
 
 func _add_frames(sf: SpriteFrames, name: String, files: Array, fps: float, loop: bool) -> void:
 	sf.add_animation(name)
@@ -205,45 +227,88 @@ func _physics_process(delta: float) -> void:
 	surge_cd = maxf(0.0, surge_cd - delta)
 	frenzy_cd = maxf(0.0, frenzy_cd - delta)
 	sense_cd = maxf(0.0, sense_cd - delta)
+	dodge_cd = maxf(0.0, dodge_cd - delta)
+	dodge_t = maxf(0.0, dodge_t - delta)
 	surge_t = maxf(0.0, surge_t - delta)
 	frenzy_t = maxf(0.0, frenzy_t - delta)
 	sense_t = maxf(0.0, sense_t - delta)
 	_flash = maxf(0.0, _flash - delta)
 	_attack_t = maxf(0.0, _attack_t - delta)
 	_hurt_t = maxf(0.0, _hurt_t - delta)
+	_squash_t = maxf(0.0, _squash_t - delta)
 	_lunge = _lunge.lerp(Vector2.ZERO, 14.0 * delta)
 	$Sprite.modulate = Color(1.8, 0.45, 0.45) if _flash > 0.0 else Color.WHITE
 	# --- infection drift ---
 	add_infection(PASSIVE_INFECTION * delta, true)
 	if extract_cleanse:
 		add_infection(-5.0 * delta, true)
-	# --- movement (accel/decel, knockback decays) ---
+	# --- hold attack to charge a heavy ---
+	var held := Input.is_action_pressed("atk") or touch_atk_held
+	if held and dodge_t <= 0.0:
+		_hold_t += delta
+		if _hold_t >= 0.45 and _heavy_armed and attack_cd <= 0.05:
+			_heavy_armed = false
+			attack_heavy()
+		elif _hold_t >= 0.25 and _flash <= 0.0:
+			var pulse := 1.0 + 0.12 * sin(_hold_t * 30.0)
+			$Sprite.modulate = Color(1.1 * pulse, 1.5 * pulse, 1.1 * pulse)
+	else:
+		_hold_t = 0.0
+		_heavy_armed = true
+	# --- movement (accel/decel, knockback decays, dodge burst) ---
 	var iv := Input.get_vector("mv_left", "mv_right", "mv_up", "mv_down")
 	var mv := iv + joystick
 	if mv.length() > 1.0:
 		mv = mv.normalized()
-	var spd := BASE_SPEED * move_mult
-	if surge_t > 0.0:
-		spd *= 1.8
-	var accel := 2400.0 if mv.length() > 0.1 else 2000.0
-	velocity = velocity.move_toward(mv * spd, accel * delta)
+	if dodge_t > 0.0:
+		velocity = dodge_dir * BASE_SPEED * 3.4
+		_ghost_t -= delta
+		if _ghost_t <= 0.0:
+			_ghost_t = 0.06
+			var m0 := _main()
+			if m0:
+				m0.fx_ghost(self)
+	else:
+		var spd := BASE_SPEED * move_mult
+		if surge_t > 0.0:
+			spd *= 1.8
+		if infection >= 70.0:
+			spd *= 1.08  # infection frenzy: faster, but fragile
+		var accel := 2400.0 if mv.length() > 0.1 else 2000.0
+		velocity = velocity.move_toward(mv * spd, accel * delta)
 	velocity += _kb
 	_kb = _kb.move_toward(Vector2.ZERO, 2200.0 * delta)
 	move_and_slide()
 	var moving := mv.length() > 0.15
 	if moving:
 		_face(mv)
+		last_move_dir = mv.normalized()
 		_bob_t += delta * 11.0
+		_dust_t -= delta
+		if _dust_t <= 0.0 and dodge_t <= 0.0:
+			_dust_t = 0.24
+			var m1 := _main()
+			if m1:
+				m1.fx_dust(global_position + Vector2(0, 66), 1)
+	# --- squash & stretch ---
+	if dodge_t > 0.0:
+		$Sprite.scale = _base_scale * Vector2(1.18, 0.82)
+	elif _squash_t > 0.0:
+		var k := 1.0 - _squash_t / 0.16
+		$Sprite.scale = _base_scale * _squash.lerp(Vector2.ONE, clampf(k, 0.0, 1.0))
+	else:
+		$Sprite.scale = _base_scale
 	# --- animation state machine (attack/hurt lock, then locomotion) ---
 	var want := ""
 	if _attack_t > 0.0:
 		want = "attack"
 	elif _hurt_t > 0.0:
 		want = "hurt"
-	elif moving:
+	elif moving or dodge_t > 0.0:
 		want = _anim_name() + "_walk"
 	else:
 		want = _anim_name() + "_idle"
+	$Sprite.speed_scale = 2.2 if dodge_t > 0.0 else 1.0
 	if $Sprite.animation != want or not $Sprite.is_playing():
 		$Sprite.play(want)
 	$Sprite.position = Vector2(0, sin(_bob_t) * 5.0 if moving else 0.0) + _lunge
@@ -259,20 +324,67 @@ func _anim_name() -> String:
 	return "up" if facing.y < -0.1 else "down"
 
 func attack() -> void:
-	if dead or attack_cd > 0.0:
+	if dead or attack_cd > 0.0 or dodge_t > 0.0:
 		return
 	attack_cd = 0.42
 	_attack_t = 0.32
 	_lunge = facing * 30.0
+	_squash = Vector2(1.12, 0.88)
+	_squash_t = 0.16
 	Sfx.play("swing")
 	var s := slash_scene.instantiate()
 	s.global_position = global_position + facing * 110.0
 	s.rotation = facing.angle()
-	s.damage = damage * (2 if frenzy_t > 0.0 else 1)
+	s.damage = _out_damage(1.0)
 	get_parent().add_child(s)
 	var m := _main()
 	if m:
 		m.hitstop(0.05)
+		m.fx_trail(global_position + facing * 70.0, facing.angle(), false)
+
+func attack_heavy() -> void:
+	# charged heavy: hold attack 0.45s. Big arc, big damage, costs infection.
+	if dead or dodge_t > 0.0:
+		return
+	attack_cd = 0.6
+	_attack_t = 0.4
+	_lunge = facing * 46.0
+	_squash = Vector2(1.22, 0.78)
+	_squash_t = 0.16
+	Sfx.play("swing")
+	add_infection(4.0, true)
+	var s := slash_scene.instantiate()
+	s.global_position = global_position + facing * 120.0
+	s.rotation = facing.angle()
+	s.scale = Vector2(1.7, 1.7)
+	s.damage = _out_damage(heavy_mult)
+	get_parent().add_child(s)
+	var m := _main()
+	if m:
+		m.hitstop(0.09)
+		m.shake(0.5)
+		m.fx_trail(global_position + facing * 80.0, facing.angle(), true)
+		m.fx_dust(global_position, 4)
+
+func _out_damage(mult: float) -> int:
+	# infection risk/reward: riding it high hits harder
+	return int(round(damage * mult * (2.0 if frenzy_t > 0.0 else 1.0) * (1.0 + infection / 200.0)))
+
+func try_dodge(dir: Vector2) -> void:
+	if dead or dodge_cd > 0.0 or dodge_t > 0.0 or _attack_t > 0.0:
+		return
+	if dir.length() < 0.1:
+		dir = facing
+	dodge_dir = dir.normalized()
+	dodge_t = 0.32
+	dodge_cd = dodge_cd_max
+	hurt_cd = maxf(hurt_cd, 0.34)  # i-frames
+	_ghost_t = 0.0
+	Sfx.play("surge")
+	var m := _main()
+	if m:
+		m.fx_dust(global_position, 6)
+		m.shake(0.12)
 
 func try_surge() -> void:
 	if dead or surge_cd > 0.0 or infection + surge_cost >= 100.0:
@@ -308,7 +420,9 @@ func take_hit(amount: float, from_pos: Vector2 = Vector2.ZERO) -> void:
 	hurt_cd = 0.6
 	_flash = 0.18
 	_hurt_t = 0.25
-	hp -= amount
+	_squash = Vector2(1.18, 0.82)
+	_squash_t = 0.16
+	hp -= amount * (1.0 + infection / 200.0)  # infection risk: fragile when riding high
 	Sfx.play("hurt")
 	var m := _main()
 	if m:
@@ -402,12 +516,17 @@ var pad_glow: Sprite2D = null
 var _hitstop := 0.0                     # hit-stop timer (unscaled)
 var _trauma := 0.0                      # screen-shake trauma 0..1
 var _glow_t := 0.0
+var run := {}                           # run state: survives floor rebuilds
+var atk_touch_id := -1                  # right-half tap holding attack
+var last_tap_msec := 0                  # double-tap dodge tracking
 
 const UPGRADES := [
 	{"name": "MAX HP +20", "desc": "Sturdier body"},
 	{"name": "DAMAGE +1", "desc": "Heavier swings"},
 	{"name": "SPEED +10%", "desc": "Lighter feet"},
 	{"name": "CHEAP POWERS", "desc": "Powers cost 25% less"},
+	{"name": "SWIFT DODGE", "desc": "Dodge recharges 30% faster"},
+	{"name": "HEAVY HITTER", "desc": "Charged heavies hit 40% harder"},
 ]
 
 class SenseMarker extends Node2D:
@@ -440,6 +559,7 @@ func _ensure_input() -> void:
 	_add("mv_up", [KEY_W, KEY_UP])
 	_add("mv_down", [KEY_S, KEY_DOWN])
 	_add("atk", [KEY_SPACE])
+	_add("dodge", [KEY_SHIFT])
 	_add("surge", [KEY_Q])
 	_add("frenzy", [KEY_E])
 	_add("sense", [KEY_F])
@@ -460,7 +580,49 @@ func _to_canvas(p: Vector2) -> Vector2:
 func start_run() -> void:
 	Engine.time_scale = 1.0
 	floor_num = 1
+	run = _default_run()
 	build_floor()
+
+func _default_run() -> Dictionary:
+	return {
+		"max_hp": 100.0, "hp": 100.0, "damage": 1, "move_mult": 1.0,
+		"surge_cost": 15.0, "frenzy_cost": 20.0, "scrap": 0,
+		"level": 1, "xp": 0, "xp_next": 45, "infection": 0.0,
+		"dodge_cd_max": 1.1, "heavy_mult": 2.5,
+	}
+
+func _snapshot_run() -> void:
+	# copy the living player's state before the floor (and player) is rebuilt
+	if player == null or not is_instance_valid(player):
+		return
+	run["max_hp"] = player.max_hp
+	run["hp"] = player.hp
+	run["damage"] = player.damage
+	run["move_mult"] = player.move_mult
+	run["surge_cost"] = player.surge_cost
+	run["frenzy_cost"] = player.frenzy_cost
+	run["scrap"] = player.scrap
+	run["level"] = player.level
+	run["xp"] = player.xp
+	run["xp_next"] = player.xp_next
+	run["infection"] = player.infection
+	run["dodge_cd_max"] = player.dodge_cd_max
+	run["heavy_mult"] = player.heavy_mult
+
+func _apply_run(p: Node) -> void:
+	p.max_hp = float(run["max_hp"])
+	p.hp = float(run["hp"])
+	p.damage = int(run["damage"])
+	p.move_mult = float(run["move_mult"])
+	p.surge_cost = float(run["surge_cost"])
+	p.frenzy_cost = float(run["frenzy_cost"])
+	p.scrap = int(run["scrap"])
+	p.level = int(run["level"])
+	p.xp = int(run["xp"])
+	p.xp_next = int(run["xp_next"])
+	p.infection = float(run["infection"])
+	p.dodge_cd_max = float(run["dodge_cd_max"])
+	p.heavy_mult = float(run["heavy_mult"])
 
 func build_floor() -> void:
 	# clear old floor (deferred; new one tracked via floor_node)
@@ -508,6 +670,7 @@ func build_floor() -> void:
 	# player in entrance room
 	var entrance: Dictionary = _room_by_type("entrance")
 	player = player_scene.instantiate()
+	_apply_run(player)  # upgrades/scrap/xp/infection survive the descent
 	player.position = entrance["center"]
 	f.add_child(player)
 	cam = player.get_node("Camera") as Camera2D
@@ -877,19 +1040,27 @@ func floor_cleared() -> void:
 func _on_upgrade(u: Dictionary) -> void:
 	get_tree().paused = false
 	Sfx.play("upgrade")
+	_snapshot_run()
 	match u["name"]:
 		"MAX HP +20":
-			player.max_hp += 20.0
-			player.heal(20.0)
+			run["max_hp"] = float(run["max_hp"]) + 20.0
+			run["hp"] = minf(float(run["max_hp"]), float(run["hp"]) + 20.0)
 		"DAMAGE +1":
-			player.damage += 1
+			run["damage"] = int(run["damage"]) + 1
 		"SPEED +10%":
-			player.move_mult *= 1.1
+			run["move_mult"] = float(run["move_mult"]) * 1.1
 		"CHEAP POWERS":
-			player.surge_cost = 11.0
-			player.frenzy_cost = 15.0
+			run["surge_cost"] = 11.0
+			run["frenzy_cost"] = 15.0
+		"SWIFT DODGE":
+			run["dodge_cd_max"] = float(run["dodge_cd_max"]) * 0.7
+		"HEAVY HITTER":
+			run["heavy_mult"] = float(run["heavy_mult"]) * 1.4
+	# descend: catch your breath (+25% HP), but the infection comes with you
+	run["hp"] = minf(float(run["max_hp"]), float(run["hp"]) + float(run["max_hp"]) * 0.25)
 	floor_num += 1
 	build_floor()
+	hud.show_toast("DEPTH %d — upgrades kept" % floor_num)
 
 func hitstop(dur: float) -> void:
 	Engine.time_scale = 0.05
@@ -897,6 +1068,75 @@ func hitstop(dur: float) -> void:
 
 func shake(amount: float) -> void:
 	_trauma = minf(1.0, _trauma + amount)
+
+# ---------------- juice: ghosts, sparks, dust, trails ----------------
+func fx_ghost(p: Node2D) -> void:
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var spr := p.get_node_or_null("Sprite") as AnimatedSprite2D
+	if spr == null:
+		return
+	var g := Sprite2D.new()
+	g.texture = spr.sprite_frames.get_frame_texture(spr.animation, spr.frame)
+	g.global_position = p.global_position
+	g.scale = spr.global_scale
+	g.flip_h = spr.flip_h
+	g.modulate = Color(0.45, 1.0, 0.55, 0.55)
+	g.z_index = 1  # above floor tiles, trails behind the dodging player
+	floor_node.add_child(g)
+	var tw := create_tween()
+	tw.tween_property(g, "modulate:a", 0.0, 0.3)
+	tw.tween_callback(g.queue_free)
+
+func fx_sparks(pos: Vector2, color: Color = Color(1, 1, 1)) -> void:
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var tex := load("res://assets/spark.png") as Texture2D
+	for i in range(8):
+		var s := Sprite2D.new()
+		s.texture = tex
+		s.position = pos
+		s.modulate = color
+		var a := rng.randf() * TAU
+		var d := Vector2(cos(a), sin(a)) * rng.randf_range(120.0, 320.0)
+		floor_node.add_child(s)
+		var tw := create_tween().set_parallel()
+		tw.tween_property(s, "position", pos + d, 0.35).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tw.tween_property(s, "modulate:a", 0.0, 0.35)
+		tw.chain().tween_callback(s.queue_free)
+
+func fx_dust(pos: Vector2, n: int = 3) -> void:
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var tex := load("res://assets/dust.png") as Texture2D
+	for i in range(n):
+		var s := Sprite2D.new()
+		s.texture = tex
+		s.position = pos + Vector2(rng.randf_range(-24, 24), rng.randf_range(-8, 8))
+		s.modulate = Color(0.8, 0.78, 0.75, 0.5)
+		var sc := rng.randf_range(0.7, 1.4) * 0.5
+		s.scale = Vector2(sc, sc)
+		floor_node.add_child(s)
+		var tw := create_tween().set_parallel()
+		tw.tween_property(s, "scale", s.scale * 2.2, 0.4)
+		tw.tween_property(s, "modulate:a", 0.0, 0.4)
+		tw.chain().tween_callback(s.queue_free)
+
+func fx_trail(pos: Vector2, angle: float, big: bool) -> void:
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var s := Sprite2D.new()
+	s.texture = load("res://assets/trail_arc.png")
+	s.position = pos
+	s.rotation = angle
+	var sc := 1.1 if big else 0.8
+	s.scale = Vector2(sc, sc)
+	s.modulate = Color(0.7, 1.0, 0.75, 0.85)
+	floor_node.add_child(s)
+	var tw := create_tween().set_parallel()
+	tw.tween_property(s, "rotation", angle + 1.2, 0.18)
+	tw.tween_property(s, "modulate:a", 0.0, 0.18)
+	tw.chain().tween_callback(s.queue_free)
 
 func _on_player_died(turned: bool) -> void:
 	Engine.time_scale = 1.0
@@ -923,16 +1163,30 @@ func _input(event: InputEvent) -> void:
 	if event.is_action_pressed("sense"):
 		if player:
 			player.try_sense()
+	if event.is_action_pressed("dodge"):
+		if player:
+			player.try_dodge(player.last_move_dir)
 	if event is InputEventScreenTouch:
 		var t := event as InputEventScreenTouch
 		var cpos := _to_canvas(t.position)
 		if t.pressed:
-			if cpos.x < 360.0 and joy_id == -1:
-				joy_id = t.index
-				joy_origin = cpos
-				hud.show_joystick(cpos)
+			if cpos.x < 360.0:
+				# double-tap left half = dodge roll
+				var now := Time.get_ticks_msec()
+				if now - last_tap_msec < 350:
+					if player:
+						player.try_dodge(player.last_move_dir)
+					last_tap_msec = 0
+				else:
+					last_tap_msec = now
+				if joy_id == -1:
+					joy_id = t.index
+					joy_origin = cpos
+					hud.show_joystick(cpos)
 			elif cpos.x >= 360.0 and not _on_power_btn(cpos):
 				if player and not player.dead:
+					atk_touch_id = t.index
+					player.touch_atk_held = true
 					player.attack()
 		else:
 			if t.index == joy_id:
@@ -940,6 +1194,10 @@ func _input(event: InputEvent) -> void:
 				if player:
 					player.joystick = Vector2.ZERO
 				hud.hide_joystick()
+			if t.index == atk_touch_id:
+				atk_touch_id = -1
+				if player:
+					player.touch_atk_held = false
 	elif event is InputEventScreenDrag:
 		var d := event as InputEventScreenDrag
 		if d.index == joy_id and player:
@@ -982,7 +1240,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 10.0 + floor_num
 			xp = 14
 			_base = "e_runner"
-			_spr_scale = 0.45
+			_spr_scale = 0.55
 			_hbox = Vector2(0.85, 0.85)
 		"brute":
 			max_hp = 9 + floor_num
@@ -990,7 +1248,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 22.0 + floor_num
 			xp = 30
 			_base = "e_brute"
-			_spr_scale = 0.775
+			_spr_scale = 0.9
 			_hbox = Vector2(1.6, 1.5)
 		_:  # shambler
 			max_hp = 3 + floor_num / 2
@@ -998,7 +1256,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 12.0 + floor_num
 			xp = 10
 			_base = "e_shambler"
-			_spr_scale = 0.5
+			_spr_scale = 0.6
 			_hbox = Vector2.ONE
 	hp = max_hp
 
@@ -1022,6 +1280,11 @@ func _ready() -> void:
 	$Sprite.play("walk")
 	$Sprite.scale = Vector2(_spr_scale, _spr_scale)
 	$CollisionShape2D.scale = _hbox
+	var sh := Sprite2D.new()
+	sh.texture = load("res://assets/shadow.png")
+	sh.position = Vector2(0, 128.0 * _spr_scale + 4.0)
+	add_child(sh)
+	move_child(sh, 0)
 
 func _add_frames(sf: SpriteFrames, name: String, files: Array, fps: float, loop: bool) -> void:
 	sf.add_animation(name)
@@ -1095,6 +1358,9 @@ func take_damage(amount: int) -> void:
 		if away.length() > 1.0:
 			_knockback = away.normalized() * 300.0
 	Sfx.play("hit")
+	var main := _main()
+	if main:
+		main.fx_sparks(global_position + Vector2(0, -30), Color(0.6, 1.0, 0.6))
 	if hp <= 0:
 		_die()
 
@@ -1109,6 +1375,8 @@ func _die() -> void:
 	if main:
 		main.hitstop(0.09)
 		main.shake(0.3)
+		main.fx_sparks(global_position + Vector2(0, -40), Color(0.4, 1.0, 0.5))
+		main.fx_dust(global_position + Vector2(0, 40), 4)
 		main.call("on_infected_killed", global_position, xp, is_boss)
 	var tw := create_tween()
 	tw.tween_interval(0.5)          # death pose reads clearly
@@ -1249,6 +1517,8 @@ var hp_fill: StyleBoxFlat
 var draft_panel: PanelContainer
 var death_panel: PanelContainer
 var minimap: Minimap
+var corrupt: ColorRect
+var _crit_warned := false
 var _t := 0.0
 var _toast_t := 0.0
 
@@ -1308,6 +1578,13 @@ func _ready() -> void:
 	vig.stretch_mode = TextureRect.STRETCH_SCALE
 	vig.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(vig)
+	# corruption vignette: the screen rots as infection climbs (under the buttons)
+	corrupt = ColorRect.new()
+	corrupt.set_anchors_preset(Control.PRESET_FULL_RECT)
+	corrupt.color = Color(0.45, 0.06, 0.1)
+	corrupt.modulate.a = 0.0
+	corrupt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(corrupt)
 	# joystick visuals first so buttons always draw on top of them
 	joy_base = Sprite2D.new()
 	joy_base.texture = load("res://assets/joy_base.png")
@@ -1348,7 +1625,13 @@ func _ready() -> void:
 	surge_btn.pressed.connect(func(): if player: player.try_surge())
 	frenzy_btn.pressed.connect(func(): if player: player.try_frenzy())
 	sense_btn.pressed.connect(func(): if player: player.try_sense())
-	atk_btn.pressed.connect(func(): if player and not player.dead: player.attack())
+	atk_btn.button_down.connect(func():
+		if player and not player.dead:
+			player.touch_atk_held = true
+			player.attack())
+	atk_btn.button_up.connect(func():
+		if player:
+			player.touch_atk_held = false)
 	channel_label = _label(Vector2(210, 180), 26, "EXTRACTING...")
 	channel_label.add_theme_color_override("font_color", Color(0.35, 1.0, 0.5))
 	channel_label.visible = false
@@ -1555,6 +1838,18 @@ func _process(delta: float) -> void:
 			toast_label.visible = false
 	if player == null or not is_instance_valid(player):
 		return
+	# corruption vignette: screen rots as infection climbs, pulses hard past 70
+	var inf := float(player.infection)
+	var target := 0.0
+	if inf >= 55.0:
+		var rate := 9.0 if inf >= 70.0 else 4.0
+		target = (inf - 55.0) / 45.0 * 0.30 * (0.75 + 0.25 * sin(_t * rate))
+	corrupt.modulate.a = lerpf(corrupt.modulate.a, target, clampf(8.0 * delta, 0.0, 1.0))
+	if inf >= 70.0 and not _crit_warned:
+		_crit_warned = true
+		show_toast("INFECTION CRITICAL — power surges, body fails")
+	elif inf < 55.0:
+		_crit_warned = false
 	hp_bar.max_value = player.max_hp
 	hp_bar.value = player.hp
 	hp_num.text = "%d" % int(ceil(player.hp))

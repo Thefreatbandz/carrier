@@ -26,6 +26,8 @@ var hp_fill: StyleBoxFlat
 var draft_panel: PanelContainer
 var death_panel: PanelContainer
 var minimap: Minimap
+var corrupt: ColorRect
+var _crit_warned := false
 var _t := 0.0
 var _toast_t := 0.0
 
@@ -85,6 +87,13 @@ func _ready() -> void:
 	vig.stretch_mode = TextureRect.STRETCH_SCALE
 	vig.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(vig)
+	# corruption vignette: the screen rots as infection climbs (under the buttons)
+	corrupt = ColorRect.new()
+	corrupt.set_anchors_preset(Control.PRESET_FULL_RECT)
+	corrupt.color = Color(0.45, 0.06, 0.1)
+	corrupt.modulate.a = 0.0
+	corrupt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(corrupt)
 	# joystick visuals first so buttons always draw on top of them
 	joy_base = Sprite2D.new()
 	joy_base.texture = load("res://assets/joy_base.png")
@@ -125,7 +134,13 @@ func _ready() -> void:
 	surge_btn.pressed.connect(func(): if player: player.try_surge())
 	frenzy_btn.pressed.connect(func(): if player: player.try_frenzy())
 	sense_btn.pressed.connect(func(): if player: player.try_sense())
-	atk_btn.pressed.connect(func(): if player and not player.dead: player.attack())
+	atk_btn.button_down.connect(func():
+		if player and not player.dead:
+			player.touch_atk_held = true
+			player.attack())
+	atk_btn.button_up.connect(func():
+		if player:
+			player.touch_atk_held = false)
 	channel_label = _label(Vector2(210, 180), 26, "EXTRACTING...")
 	channel_label.add_theme_color_override("font_color", Color(0.35, 1.0, 0.5))
 	channel_label.visible = false
@@ -332,6 +347,18 @@ func _process(delta: float) -> void:
 			toast_label.visible = false
 	if player == null or not is_instance_valid(player):
 		return
+	# corruption vignette: screen rots as infection climbs, pulses hard past 70
+	var inf := float(player.infection)
+	var target := 0.0
+	if inf >= 55.0:
+		var rate := 9.0 if inf >= 70.0 else 4.0
+		target = (inf - 55.0) / 45.0 * 0.30 * (0.75 + 0.25 * sin(_t * rate))
+	corrupt.modulate.a = lerpf(corrupt.modulate.a, target, clampf(8.0 * delta, 0.0, 1.0))
+	if inf >= 70.0 and not _crit_warned:
+		_crit_warned = true
+		show_toast("INFECTION CRITICAL — power surges, body fails")
+	elif inf < 55.0:
+		_crit_warned = false
 	hp_bar.max_value = player.max_hp
 	hp_bar.value = player.hp
 	hp_num.text = "%d" % int(ceil(player.hp))
