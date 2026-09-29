@@ -176,6 +176,7 @@ func _ready() -> void:
 	_add_frames(sf, "hurt", ["p_hurt_0"], 8.0, false)
 	_add_frames(sf, "death", ["p_death_0", "p_death_1"], 6.0, false)
 	$Sprite.frames = sf
+	$Sprite.scale = Vector2(0.5, 0.5)  # HD art is 2x, keep on-screen size
 	$Sprite.play("down_idle")
 
 func _add_frames(sf: SpriteFrames, name: String, files: Array, fps: float, loop: bool) -> void:
@@ -712,7 +713,7 @@ func _spawn_chest(pos: Vector2) -> void:
 	var sp := Sprite2D.new()
 	sp.name = "Sprite"
 	sp.texture = load("res://assets/chest_closed.png")
-	sp.scale = Vector2(1.4, 1.4)
+	sp.scale = Vector2(0.7, 0.7)
 	ch.add_child(sp)
 	var shape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
@@ -981,7 +982,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 10.0 + floor_num
 			xp = 14
 			_base = "e_runner"
-			_spr_scale = 0.9
+			_spr_scale = 0.45
 			_hbox = Vector2(0.85, 0.85)
 		"brute":
 			max_hp = 9 + floor_num
@@ -989,7 +990,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 22.0 + floor_num
 			xp = 30
 			_base = "e_brute"
-			_spr_scale = 1.55
+			_spr_scale = 0.775
 			_hbox = Vector2(1.6, 1.5)
 		_:  # shambler
 			max_hp = 3 + floor_num / 2
@@ -997,7 +998,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 12.0 + floor_num
 			xp = 10
 			_base = "e_shambler"
-			_spr_scale = 1.0
+			_spr_scale = 0.5
 			_hbox = Vector2.ONE
 	hp = max_hp
 
@@ -1619,6 +1620,7 @@ func _ready() -> void:
 			add_child(sp)
 	var hero := Sprite2D.new()
 	hero.texture = load("res://assets/p_down_idle_0.png")
+	hero.scale = Vector2(0.5, 0.5)
 	hero.position = Vector2(360, 500)
 	add_child(hero)
 	var title := Label.new()
@@ -1758,6 +1760,15 @@ infected HP/speed/damage + spawn rate. Upgrade draft compounds builds.
 - Graphics: 4 floor tile variants (base/crack/grime/infection moss) in
   seeded 6x6 per-room mix, gate glows, pulsing extraction pad glow.
 - Run-state persistence across depths still unproven (known issue).
+- QA: walk-through PASS, 22/22 phase-2, 27/27 phase-3, zero script errors.
+
+## Phase 5 (shipped 2026-09-29) - HD SPRITE PASS
+- All 48 character frames redrawn at 2x (192x256) with gradient shading,
+  rim light, glowing eyes/cracks, detailed cloth/armor/blade work.
+- HD environment: 4 floor tiles (240px, fine grain + bevels), wall blocks
+  (stone courses, mortar, moss), gate posts (carved stones, glowing runes),
+  HD sword pickup + chests (open chest glows).
+- Sprite scales halved to keep on-screen sizes; collisions unchanged.
 - QA: walk-through PASS, 22/22 phase-2, 27/27 phase-3, zero script errors.
 
 ## RPG roadmap (Tbandz's blueprint, staged)

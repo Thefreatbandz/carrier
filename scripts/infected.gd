@@ -28,7 +28,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 10.0 + floor_num
 			xp = 14
 			_base = "e_runner"
-			_spr_scale = 0.9
+			_spr_scale = 0.45
 			_hbox = Vector2(0.85, 0.85)
 		"brute":
 			max_hp = 9 + floor_num
@@ -36,7 +36,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 22.0 + floor_num
 			xp = 30
 			_base = "e_brute"
-			_spr_scale = 1.55
+			_spr_scale = 0.775
 			_hbox = Vector2(1.6, 1.5)
 		_:  # shambler
 			max_hp = 3 + floor_num / 2
@@ -44,7 +44,7 @@ func setup(t: String, floor_num: int) -> void:
 			touch_damage = 12.0 + floor_num
 			xp = 10
 			_base = "e_shambler"
-			_spr_scale = 1.0
+			_spr_scale = 0.5
 			_hbox = Vector2.ONE
 	hp = max_hp
 

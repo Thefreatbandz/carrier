@@ -94,6 +94,15 @@ infected HP/speed/damage + spawn rate. Upgrade draft compounds builds.
 - Run-state persistence across depths still unproven (known issue).
 - QA: walk-through PASS, 22/22 phase-2, 27/27 phase-3, zero script errors.
 
+## Phase 5 (shipped 2026-09-29) - HD SPRITE PASS
+- All 48 character frames redrawn at 2x (192x256) with gradient shading,
+  rim light, glowing eyes/cracks, detailed cloth/armor/blade work.
+- HD environment: 4 floor tiles (240px, fine grain + bevels), wall blocks
+  (stone courses, mortar, moss), gate posts (carved stones, glowing runes),
+  HD sword pickup + chests (open chest glows).
+- Sprite scales halved to keep on-screen sizes; collisions unchanged.
+- QA: walk-through PASS, 22/22 phase-2, 27/27 phase-3, zero script errors.
+
 ## RPG roadmap (Tbandz's blueprint, staged)
 Loop: Explore -> Fight -> Loot -> Upgrade -> Discover -> Boss -> New
 Dungeon -> Repeat. Infection meter stays the signature mechanic.

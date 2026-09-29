@@ -58,6 +58,7 @@ func _ready() -> void:
 	_add_frames(sf, "hurt", ["p_hurt_0"], 8.0, false)
 	_add_frames(sf, "death", ["p_death_0", "p_death_1"], 6.0, false)
 	$Sprite.frames = sf
+	$Sprite.scale = Vector2(0.5, 0.5)  # HD art is 2x, keep on-screen size
 	$Sprite.play("down_idle")
 
 func _add_frames(sf: SpriteFrames, name: String, files: Array, fps: float, loop: bool) -> void:

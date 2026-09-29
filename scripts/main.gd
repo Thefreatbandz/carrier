@@ -338,7 +338,7 @@ func _spawn_chest(pos: Vector2) -> void:
 	var sp := Sprite2D.new()
 	sp.name = "Sprite"
 	sp.texture = load("res://assets/chest_closed.png")
-	sp.scale = Vector2(1.4, 1.4)
+	sp.scale = Vector2(0.7, 0.7)
 	ch.add_child(sp)
 	var shape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()

@@ -18,6 +18,7 @@ func _ready() -> void:
 			add_child(sp)
 	var hero := Sprite2D.new()
 	hero.texture = load("res://assets/p_down_idle_0.png")
+	hero.scale = Vector2(0.5, 0.5)
 	hero.position = Vector2(360, 500)
 	add_child(hero)
 	var title := Label.new()
