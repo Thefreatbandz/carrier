@@ -21,6 +21,8 @@ var joy_base: Sprite2D
 var joy_knob: Sprite2D
 var channel_bar: ProgressBar
 var channel_label: Label
+var hp_num: Label
+var hp_fill: StyleBoxFlat
 var draft_panel: PanelContainer
 var death_panel: PanelContainer
 var minimap: Minimap
@@ -95,6 +97,8 @@ func _ready() -> void:
 	joy_knob.visible = false
 	add_child(joy_knob)
 	hp_bar = _bar(Vector2(24, 24), Vector2(300, 28), Color(0.85, 0.2, 0.2))
+	hp_fill = hp_bar.get_theme_stylebox("fill") as StyleBoxFlat
+	hp_num = _label(Vector2(30, 26), 20, "100")
 	inf_bar = _bar(Vector2(24, 60), Vector2(300, 28), Color(0.25, 1.0, 0.42))
 	inf_label = _label(Vector2(24, 92), 22, "INFECTION 0%")
 	inf_label.add_theme_color_override("font_color", Color(0.35, 1.0, 0.5))
@@ -140,10 +144,16 @@ func _bar(pos: Vector2, size: Vector2, fill: Color) -> ProgressBar:
 	b.show_percentage = false
 	var bg := StyleBoxFlat.new()
 	bg.bg_color = Color(0, 0, 0, 0.6)
+	bg.border_color = Color(1, 1, 1, 0.22)
+	bg.set_border_width_all(2)
 	bg.set_corner_radius_all(6)
 	var fg := StyleBoxFlat.new()
 	fg.bg_color = fill
-	fg.set_corner_radius_all(6)
+	fg.set_corner_radius_all(5)
+	fg.content_margin_left = 2
+	fg.content_margin_right = 2
+	fg.content_margin_top = 2
+	fg.content_margin_bottom = 2
 	b.add_theme_stylebox_override("background", bg)
 	b.add_theme_stylebox_override("fill", fg)
 	add_child(b)
@@ -271,6 +281,11 @@ func show_draft(picks: Array, cb: Callable) -> void:
 		b.text = "%s: %s" % [u["name"], u["desc"]]
 		b.custom_minimum_size = Vector2(420, 96)
 		b.add_theme_font_size_override("font_size", 26)
+		b.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
+		b.add_theme_stylebox_override("normal", _btn_style(Color(0.25, 1.0, 0.42), 12))
+		b.add_theme_stylebox_override("hover", _btn_style(Color(0.25, 1.0, 0.42), 12))
+		b.add_theme_stylebox_override("pressed", _btn_style(Color(0.1, 0.6, 0.25), 12))
+		b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 		var uu: Dictionary = u
 		b.pressed.connect(func(): draft_panel.visible = false; cb.call(uu))
 		vb.add_child(b)
@@ -297,6 +312,11 @@ func show_death(turned: bool, floor: int, scrap: int) -> void:
 	rb.text = "RUN IT BACK"
 	rb.custom_minimum_size = Vector2(420, 96)
 	rb.add_theme_font_size_override("font_size", 30)
+	rb.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
+	rb.add_theme_stylebox_override("normal", _btn_style(Color(0.25, 1.0, 0.42), 12))
+	rb.add_theme_stylebox_override("hover", _btn_style(Color(0.25, 1.0, 0.42), 12))
+	rb.add_theme_stylebox_override("pressed", _btn_style(Color(0.1, 0.6, 0.25), 12))
+	rb.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	rb.pressed.connect(func(): get_tree().paused = false; get_tree().reload_current_scene())
 	vb.add_child(rb)
 	death_panel.visible = true
@@ -314,6 +334,15 @@ func _process(delta: float) -> void:
 		return
 	hp_bar.max_value = player.max_hp
 	hp_bar.value = player.hp
+	hp_num.text = "%d" % int(ceil(player.hp))
+	var frac: float = float(player.hp) / maxf(float(player.max_hp), 1.0)
+	if frac > 0.5:
+		hp_fill.bg_color = Color(0.85, 0.2, 0.2)
+	elif frac > 0.25:
+		hp_fill.bg_color = Color(0.9, 0.65, 0.15)
+	else:
+		var pulse := 0.75 + 0.25 * sin(_t * 8.0)
+		hp_fill.bg_color = Color(1.0 * pulse, 0.15, 0.15)
 	inf_bar.value = player.infection
 	inf_label.text = "INFECTION %d%%" % int(player.infection)
 	if boss_ref != null:

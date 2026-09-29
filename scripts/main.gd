@@ -15,13 +15,18 @@ var channel_t := 0.0
 var _tick_t := 0.0
 const CHANNEL_NEED := 3.0
 const CELL := 720.0
-const DOOR_GAP := 180.0
+const DOOR_GAP := 280.0
 var dungeon_rooms: Array = []
 var boss: Node = null
 const WEAPON_NAMES := ["WORN SHIV", "RUSTY BLADE", "HUNTER'S EDGE", "PLAGUEBANE"]
 var pad: Area2D
 var joy_id := -1
 var joy_origin := Vector2.ZERO
+var cam: Camera2D                       # cached player camera (shake)
+var pad_glow: Sprite2D = null
+var _hitstop := 0.0                     # hit-stop timer (unscaled)
+var _trauma := 0.0                      # screen-shake trauma 0..1
+var _glow_t := 0.0
 
 const UPGRADES := [
 	{"name": "MAX HP +20", "desc": "Sturdier body"},
@@ -78,6 +83,7 @@ func _to_canvas(p: Vector2) -> Vector2:
 	return get_viewport().get_canvas_transform().affine_inverse() * p
 
 func start_run() -> void:
+	Engine.time_scale = 1.0
 	floor_num = 1
 	build_floor()
 
@@ -94,23 +100,42 @@ func build_floor() -> void:
 	add_child(f)
 	floor_node = f
 	_gen_dungeon()
-	var tile_tex := load("res://assets/floor_tile.png") as Texture2D
+	var floor_texs: Array = [
+		load("res://assets/floor_a.png") as Texture2D,
+		load("res://assets/floor_crack.png") as Texture2D,
+		load("res://assets/floor_grime.png") as Texture2D,
+		load("res://assets/floor_moss.png") as Texture2D,
+	]
+	var floor_w := [0.60, 0.15, 0.15, 0.10]
 	var wall_tex := load("res://assets/wall_block.png") as Texture2D
-	var door_tex := load("res://assets/door.png") as Texture2D
+	var door_tex := load("res://assets/gate_post.png") as Texture2D
+	var glow_tex := load("res://assets/glow_green.png") as Texture2D
 	for r in dungeon_rooms:
 		var c: Vector2 = r["center"]
-		var sp := Sprite2D.new()
-		sp.texture = tile_tex
-		sp.scale = Vector2(CELL, CELL) / tile_tex.get_size()
-		sp.position = c
-		sp.modulate = Color(0.42, 0.44, 0.48)
-		f.add_child(sp)
-		_build_room_walls(f, r, wall_tex, door_tex)
+		# 6x6 varied floor tiles per room (seeded)
+		for tx in range(6):
+			for ty in range(6):
+				var roll := rng.randf()
+				var acc := 0.0
+				var ti := 0
+				for i in range(floor_w.size()):
+					acc += float(floor_w[i])
+					if roll <= acc:
+						ti = i
+						break
+				var sp := Sprite2D.new()
+				sp.texture = floor_texs[ti]
+				sp.scale = Vector2(120, 120) / (floor_texs[ti] as Texture2D).get_size()
+				sp.position = c + Vector2((tx - 2.5) * 120.0, (ty - 2.5) * 120.0)
+				sp.modulate = Color(0.55, 0.57, 0.62)
+				f.add_child(sp)
+		_build_room_walls(f, r, wall_tex, door_tex, glow_tex)
 	# player in entrance room
 	var entrance: Dictionary = _room_by_type("entrance")
 	player = player_scene.instantiate()
 	player.position = entrance["center"]
 	f.add_child(player)
+	cam = player.get_node("Camera") as Camera2D
 	player.died.connect(_on_player_died.bind(false))
 	player.turned.connect(_on_player_died.bind(true))
 	player.sensed.connect(func(): reveal_pickups(4.0))
@@ -127,6 +152,12 @@ func build_floor() -> void:
 	ps.texture = load("res://assets/extract_pad.png")
 	ps.scale = Vector2(0.6, 0.6)
 	pad.add_child(ps)
+	var pg := Sprite2D.new()
+	pg.texture = glow_tex
+	pg.scale = Vector2(2.2, 2.2)
+	pg.modulate = Color(1, 1, 1, 0.5)
+	pad.add_child(pg)
+	pad_glow = pg
 	var shape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
 	circ.radius = 190.0
@@ -222,7 +253,7 @@ func _gen_dungeon() -> void:
 	if not cands.is_empty():
 		(dungeon_rooms[cands[rng.randi() % cands.size()]] as Dictionary)["type"] = "treasure"
 
-func _build_room_walls(f: Node, r: Dictionary, wall_tex: Texture2D, door_tex: Texture2D) -> void:
+func _build_room_walls(f: Node, r: Dictionary, wall_tex: Texture2D, door_tex: Texture2D, glow_tex: Texture2D) -> void:
 	var c: Vector2 = r["center"]
 	var dirs := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
 	for d in dirs:
@@ -235,12 +266,20 @@ func _build_room_walls(f: Node, r: Dictionary, wall_tex: Texture2D, door_tex: Te
 			var off := seg_len / 2.0 + DOOR_GAP / 2.0
 			_tiled_wall(f, edge + tang * off, tang, seg_len, wall_tex)
 			_tiled_wall(f, edge - tang * off, tang, seg_len, wall_tex)
-			var ds := Sprite2D.new()
-			ds.texture = door_tex
-			ds.position = edge
-			ds.scale = Vector2(0.28, 0.28)
-			ds.rotation = PI / 2.0 if n.y != 0.0 else 0.0
-			f.add_child(ds)
+			# Gate: two stone posts flanking the opening, middle stays CLEAR.
+			for sgn in [-1.0, 1.0]:
+				var gp := Sprite2D.new()
+				gp.texture = door_tex  # now the gate post texture
+				gp.position = edge + tang * sgn * (DOOR_GAP / 2.0 + 34.0)
+				gp.rotation = PI / 2.0 if n.y != 0.0 else 0.0
+				f.add_child(gp)
+			# soft infection glow marking the gate
+			var gl := Sprite2D.new()
+			gl.texture = glow_tex
+			gl.position = edge
+			gl.scale = Vector2(1.6, 1.6)
+			gl.modulate = Color(1, 1, 1, 0.35)
+			f.add_child(gl)
 		else:
 			_tiled_wall(f, edge, tang, CELL, wall_tex)
 
@@ -424,6 +463,23 @@ func _on_pad_exit(body: Node2D) -> void:
 		hud.set_channel(-1.0)
 
 func _process(delta: float) -> void:
+	# hit-stop (unscaled)
+	if _hitstop > 0.0:
+		_hitstop -= delta
+		if _hitstop <= 0.0:
+			Engine.time_scale = 1.0
+	# screen shake
+	if _trauma > 0.0:
+		_trauma = maxf(0.0, _trauma - delta * 1.8)
+		if cam:
+			var s := _trauma * _trauma * 26.0
+			cam.offset = Vector2(randf_range(-s, s), randf_range(-s, s))
+	elif cam and cam.offset != Vector2.ZERO:
+		cam.offset = Vector2.ZERO
+	# extraction pad glow pulse
+	if pad_glow and is_instance_valid(pad_glow):
+		_glow_t += delta
+		pad_glow.modulate.a = 0.38 + 0.18 * sin(_glow_t * 3.0)
 	if channeling and player and not player.dead:
 		channel_t += delta
 		_tick_t += delta
@@ -437,6 +493,7 @@ func _process(delta: float) -> void:
 			floor_cleared()
 
 func floor_cleared() -> void:
+	Engine.time_scale = 1.0
 	get_tree().paused = true
 	var picks := UPGRADES.duplicate()
 	picks.shuffle()
@@ -459,7 +516,15 @@ func _on_upgrade(u: Dictionary) -> void:
 	floor_num += 1
 	build_floor()
 
+func hitstop(dur: float) -> void:
+	Engine.time_scale = 0.05
+	_hitstop = dur
+
+func shake(amount: float) -> void:
+	_trauma = minf(1.0, _trauma + amount)
+
 func _on_player_died(turned: bool) -> void:
+	Engine.time_scale = 1.0
 	get_tree().paused = true
 	Sfx.play("turn" if turned else "hurt")
 	hud.show_death(turned, floor_num, player.scrap)

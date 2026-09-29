@@ -72,6 +72,28 @@ infected HP/speed/damage + spawn rate. Upgrade draft compounds builds.
   build sat at carrier.html - now exports as index.* (root) and mirrors to
   carrier.* so both URLs serve the current build
 
+## Phase 4 (shipped 2026-09-29) - GATE / ART / ANIMATION / PHYSICS / UI POLISH
+- First-room exit fixed and rebuilt as a real GATE: DOOR_GAP widened
+  180 -> 280, player collision shrunk to 52x64, doorway center has NO
+  collision - two stone gatepost sprites flank the opening with a soft
+  infection glow. Physics walk-through test proves traversal.
+- New character art (48 generated frames): hooded outbreak carrier
+  (glowing infection eyes, blade), SHAMBLER / RUNNER / BRUTE redesigns.
+- Full animation contract: player idle/walk (3 directions, 4-frame walk),
+  attack (3 frames), hurt, death; infected walk (4) / attack (2) / death (2).
+  Attack + hurt anim locks; death pose reads 0.5s then fades.
+- Combat physics: accel/decel movement, knockback with decay, enemy
+  steering smoothing, distance-weighted separation (anti-stack), attack
+  telegraph (0.35s windup) + lunge + cooldown, hit-stop on slash/kill,
+  screen shake (trauma-based) on player hit/kill. Engine.time_scale always
+  reset on death/draft/scene load.
+- UI cleanup: bordered bars, HP number + green/yellow/red states with
+  low-HP pulse, styled draft/death buttons, infection emphasis kept.
+- Graphics: 4 floor tile variants (base/crack/grime/infection moss) in
+  seeded 6x6 per-room mix, gate glows, pulsing extraction pad glow.
+- Run-state persistence across depths still unproven (known issue).
+- QA: walk-through PASS, 22/22 phase-2, 27/27 phase-3, zero script errors.
+
 ## RPG roadmap (Tbandz's blueprint, staged)
 Loop: Explore -> Fight -> Loot -> Upgrade -> Discover -> Boss -> New
 Dungeon -> Repeat. Infection meter stays the signature mechanic.

@@ -8,7 +8,7 @@ func _ready() -> void:
 	bg.color = Color(0.03, 0.035, 0.05)
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
-	var tile_tex := load("res://assets/floor_tile.png") as Texture2D
+	var tile_tex := load("res://assets/floor_a.png") as Texture2D
 	for ix in range(3):
 		for iy in range(3):
 			var sp := Sprite2D.new()
@@ -17,7 +17,7 @@ func _ready() -> void:
 			sp.modulate = Color(0.4, 0.42, 0.46)
 			add_child(sp)
 	var hero := Sprite2D.new()
-	hero.texture = load("res://assets/hero_down_idle.png")
+	hero.texture = load("res://assets/p_down_idle_0.png")
 	hero.position = Vector2(360, 500)
 	add_child(hero)
 	var title := Label.new()
@@ -39,7 +39,7 @@ func _ready() -> void:
 	prompt.position = Vector2(190, 1050)
 	add_child(prompt)
 	var ver := Label.new()
-	ver.text = "v0.3"
+	ver.text = "v0.4"
 	ver.add_theme_font_size_override("font_size", 24)
 	ver.add_theme_color_override("font_color", Color(0.45, 0.5, 0.55))
 	ver.position = Vector2(330, 1210)

@@ -39,26 +39,43 @@ var extract_cleanse := false     # standing on pad
 var _flash := 0.0                # hurt flash timer
 var _bob_t := 0.0                # walk bob phase
 var _lunge := Vector2.ZERO       # attack lunge offset
+var _kb := Vector2.ZERO          # knockback velocity (decays)
+var _attack_t := 0.0             # attack anim lock timer
+var _hurt_t := 0.0               # hurt anim lock timer
 
 var slash_scene := preload("res://scenes/slash.tscn")
 
 func _ready() -> void:
 	add_to_group("player")
 	var sf := SpriteFrames.new()
-	_add_anim(sf, "down", ["hero_down_idle", "hero_down_walk"])
-	_add_anim(sf, "up", ["hero_up_idle", "hero_up_walk"])
-	_add_anim(sf, "side", ["hero_sideL_idle", "hero_sideL_walk"])
+	for dir in ["down", "up", "side"]:
+		_add_frames(sf, dir + "_idle",
+			["p_%s_idle_0" % dir, "p_%s_idle_1" % dir], 4.0, true)
+		_add_frames(sf, dir + "_walk",
+			["p_%s_walk_0" % dir, "p_%s_walk_1" % dir,
+			 "p_%s_walk_2" % dir, "p_%s_walk_3" % dir], 10.0, true)
+	_add_frames(sf, "attack", ["p_attack_0", "p_attack_1", "p_attack_2"], 16.0, false)
+	_add_frames(sf, "hurt", ["p_hurt_0"], 8.0, false)
+	_add_frames(sf, "death", ["p_death_0", "p_death_1"], 6.0, false)
 	$Sprite.frames = sf
-	$Sprite.play("down")
-	$Sprite.scale = Vector2(0.35, 0.35)
+	$Sprite.play("down_idle")
 
-func _add_anim(sf: SpriteFrames, name: String, files: Array) -> void:
+func _add_frames(sf: SpriteFrames, name: String, files: Array, fps: float, loop: bool) -> void:
 	sf.add_animation(name)
-	sf.set_animation_speed(name, 6.0)
-	sf.set_animation_loop(name, true)
+	sf.set_animation_speed(name, fps)
+	sf.set_animation_loop(name, loop)
 	for f in files:
 		var tex := load("res://assets/%s.png" % f) as Texture2D
 		sf.add_frame(name, tex)
+
+func _main() -> Node:
+	# walk up to the Main node (has hitstop/shake); null-safe for tests
+	var n: Node = self
+	while n:
+		if n.has_method("hitstop"):
+			return n
+		n = n.get_parent()
+	return null
 
 func _physics_process(delta: float) -> void:
 	if dead:
@@ -73,13 +90,15 @@ func _physics_process(delta: float) -> void:
 	frenzy_t = maxf(0.0, frenzy_t - delta)
 	sense_t = maxf(0.0, sense_t - delta)
 	_flash = maxf(0.0, _flash - delta)
+	_attack_t = maxf(0.0, _attack_t - delta)
+	_hurt_t = maxf(0.0, _hurt_t - delta)
 	_lunge = _lunge.lerp(Vector2.ZERO, 14.0 * delta)
 	$Sprite.modulate = Color(1.8, 0.45, 0.45) if _flash > 0.0 else Color.WHITE
 	# --- infection drift ---
 	add_infection(PASSIVE_INFECTION * delta, true)
 	if extract_cleanse:
 		add_infection(-5.0 * delta, true)
-	# --- movement ---
+	# --- movement (accel/decel, knockback decays) ---
 	var iv := Input.get_vector("mv_left", "mv_right", "mv_up", "mv_down")
 	var mv := iv + joystick
 	if mv.length() > 1.0:
@@ -87,24 +106,33 @@ func _physics_process(delta: float) -> void:
 	var spd := BASE_SPEED * move_mult
 	if surge_t > 0.0:
 		spd *= 1.8
-	velocity = mv * spd
+	var accel := 2400.0 if mv.length() > 0.1 else 2000.0
+	velocity = velocity.move_toward(mv * spd, accel * delta)
+	velocity += _kb
+	_kb = _kb.move_toward(Vector2.ZERO, 2200.0 * delta)
 	move_and_slide()
 	var moving := mv.length() > 0.15
 	if moving:
 		_face(mv)
 		_bob_t += delta * 11.0
-		if not $Sprite.is_playing():
-			$Sprite.play(_anim_name())
+	# --- animation state machine (attack/hurt lock, then locomotion) ---
+	var want := ""
+	if _attack_t > 0.0:
+		want = "attack"
+	elif _hurt_t > 0.0:
+		want = "hurt"
+	elif moving:
+		want = _anim_name() + "_walk"
 	else:
-		$Sprite.stop()
-		$Sprite.frame = 0
+		want = _anim_name() + "_idle"
+	if $Sprite.animation != want or not $Sprite.is_playing():
+		$Sprite.play(want)
 	$Sprite.position = Vector2(0, sin(_bob_t) * 5.0 if moving else 0.0) + _lunge
 	emit_signal("changed")
 
 func _face(mv: Vector2) -> void:
 	facing = mv.normalized()
 	$Sprite.flip_h = facing.x < -0.1
-	$Sprite.play(_anim_name())
 
 func _anim_name() -> String:
 	if absf(facing.x) > 0.5:
@@ -115,6 +143,7 @@ func attack() -> void:
 	if dead or attack_cd > 0.0:
 		return
 	attack_cd = 0.42
+	_attack_t = 0.32
 	_lunge = facing * 30.0
 	Sfx.play("swing")
 	var s := slash_scene.instantiate()
@@ -122,6 +151,9 @@ func attack() -> void:
 	s.rotation = facing.angle()
 	s.damage = damage * (2 if frenzy_t > 0.0 else 1)
 	get_parent().add_child(s)
+	var m := _main()
+	if m:
+		m.hitstop(0.05)
 
 func try_surge() -> void:
 	if dead or surge_cd > 0.0 or infection + surge_cost >= 100.0:
@@ -151,13 +183,21 @@ func try_sense() -> void:
 	emit_signal("sensed")
 	emit_signal("changed")
 
-func take_hit(amount: float) -> void:
+func take_hit(amount: float, from_pos: Vector2 = Vector2.ZERO) -> void:
 	if dead or hurt_cd > 0.0:
 		return
 	hurt_cd = 0.6
 	_flash = 0.18
+	_hurt_t = 0.25
 	hp -= amount
 	Sfx.play("hurt")
+	var m := _main()
+	if m:
+		m.shake(0.35)
+	if from_pos != Vector2.ZERO:
+		var d := global_position - from_pos
+		if d.length() > 1.0:
+			_kb = d.normalized() * 420.0
 	add_infection(HIT_INFECTION, true)
 	if hp <= 0.0:
 		hp = 0.0
@@ -202,9 +242,11 @@ func add_xp(n: int) -> void:
 
 func _die() -> void:
 	dead = true
+	$Sprite.play("death")
 	emit_signal("died")
 
 func _turn() -> void:
 	dead = true
 	infection = 100.0
+	$Sprite.play("death")
 	emit_signal("turned")

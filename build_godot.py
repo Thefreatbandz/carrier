@@ -59,58 +59,20 @@ W("icon.svg", """<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128
 print("PART1 done")
 
 # ================= scenes =================
-W("scenes/title.tscn", """[gd_scene load_steps=2 format=3]
-
-[ext_resource type="Script" path="res://scripts/title.gd" id="1"]
-
-[node name="Title" type="Node2D"]
-script = ExtResource("1")
-""")
-
-W("scenes/main.tscn", """[gd_scene load_steps=2 format=3]
-
-[ext_resource type="Script" path="res://scripts/main.gd" id="1"]
-
-[node name="Main" type="Node2D"]
-script = ExtResource("1")
-""")
-
-W("scenes/player.tscn", """[gd_scene load_steps=3 format=3]
-
-[ext_resource type="Script" path="res://scripts/player.gd" id="1"]
-
-[sub_resource type="RectangleShape2D" id="body"]
-size = Vector2(96, 110)
-
-[node name="Player" type="CharacterBody2D"]
-script = ExtResource("1")
-
-[node name="Body" type="CollisionShape2D" parent="."]
-position = Vector2(0, 90)
-shape = SubResource("body")
-
-[node name="Sprite" type="AnimatedSprite2D" parent="."]
-
-[node name="Camera" type="Camera2D" parent="."]
-position_smoothing_enabled = true
-position_smoothing_speed = 8.0
-zoom = Vector2(1.15, 1.15)
-""")
-
 W("scenes/infected.tscn", """[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://scripts/infected.gd" id="1"]
 
 [sub_resource type="RectangleShape2D" id="body"]
-size = Vector2(120, 100)
+size = Vector2(56, 60)
 
 [node name="Infected" type="CharacterBody2D"]
 collision_layer = 2
 collision_mask = 1
 script = ExtResource("1")
 
-[node name="Body" type="CollisionShape2D" parent="."]
-position = Vector2(0, 60)
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+position = Vector2(0, 16)
 shape = SubResource("body")
 
 [node name="Sprite" type="AnimatedSprite2D" parent="."]
@@ -195,26 +157,43 @@ var extract_cleanse := false     # standing on pad
 var _flash := 0.0                # hurt flash timer
 var _bob_t := 0.0                # walk bob phase
 var _lunge := Vector2.ZERO       # attack lunge offset
+var _kb := Vector2.ZERO          # knockback velocity (decays)
+var _attack_t := 0.0             # attack anim lock timer
+var _hurt_t := 0.0               # hurt anim lock timer
 
 var slash_scene := preload("res://scenes/slash.tscn")
 
 func _ready() -> void:
 	add_to_group("player")
 	var sf := SpriteFrames.new()
-	_add_anim(sf, "down", ["hero_down_idle", "hero_down_walk"])
-	_add_anim(sf, "up", ["hero_up_idle", "hero_up_walk"])
-	_add_anim(sf, "side", ["hero_sideL_idle", "hero_sideL_walk"])
+	for dir in ["down", "up", "side"]:
+		_add_frames(sf, dir + "_idle",
+			["p_%s_idle_0" % dir, "p_%s_idle_1" % dir], 4.0, true)
+		_add_frames(sf, dir + "_walk",
+			["p_%s_walk_0" % dir, "p_%s_walk_1" % dir,
+			 "p_%s_walk_2" % dir, "p_%s_walk_3" % dir], 10.0, true)
+	_add_frames(sf, "attack", ["p_attack_0", "p_attack_1", "p_attack_2"], 16.0, false)
+	_add_frames(sf, "hurt", ["p_hurt_0"], 8.0, false)
+	_add_frames(sf, "death", ["p_death_0", "p_death_1"], 6.0, false)
 	$Sprite.frames = sf
-	$Sprite.play("down")
-	$Sprite.scale = Vector2(0.35, 0.35)
+	$Sprite.play("down_idle")
 
-func _add_anim(sf: SpriteFrames, name: String, files: Array) -> void:
+func _add_frames(sf: SpriteFrames, name: String, files: Array, fps: float, loop: bool) -> void:
 	sf.add_animation(name)
-	sf.set_animation_speed(name, 6.0)
-	sf.set_animation_loop(name, true)
+	sf.set_animation_speed(name, fps)
+	sf.set_animation_loop(name, loop)
 	for f in files:
 		var tex := load("res://assets/%s.png" % f) as Texture2D
 		sf.add_frame(name, tex)
+
+func _main() -> Node:
+	# walk up to the Main node (has hitstop/shake); null-safe for tests
+	var n: Node = self
+	while n:
+		if n.has_method("hitstop"):
+			return n
+		n = n.get_parent()
+	return null
 
 func _physics_process(delta: float) -> void:
 	if dead:
@@ -229,13 +208,15 @@ func _physics_process(delta: float) -> void:
 	frenzy_t = maxf(0.0, frenzy_t - delta)
 	sense_t = maxf(0.0, sense_t - delta)
 	_flash = maxf(0.0, _flash - delta)
+	_attack_t = maxf(0.0, _attack_t - delta)
+	_hurt_t = maxf(0.0, _hurt_t - delta)
 	_lunge = _lunge.lerp(Vector2.ZERO, 14.0 * delta)
 	$Sprite.modulate = Color(1.8, 0.45, 0.45) if _flash > 0.0 else Color.WHITE
 	# --- infection drift ---
 	add_infection(PASSIVE_INFECTION * delta, true)
 	if extract_cleanse:
 		add_infection(-5.0 * delta, true)
-	# --- movement ---
+	# --- movement (accel/decel, knockback decays) ---
 	var iv := Input.get_vector("mv_left", "mv_right", "mv_up", "mv_down")
 	var mv := iv + joystick
 	if mv.length() > 1.0:
@@ -243,24 +224,33 @@ func _physics_process(delta: float) -> void:
 	var spd := BASE_SPEED * move_mult
 	if surge_t > 0.0:
 		spd *= 1.8
-	velocity = mv * spd
+	var accel := 2400.0 if mv.length() > 0.1 else 2000.0
+	velocity = velocity.move_toward(mv * spd, accel * delta)
+	velocity += _kb
+	_kb = _kb.move_toward(Vector2.ZERO, 2200.0 * delta)
 	move_and_slide()
 	var moving := mv.length() > 0.15
 	if moving:
 		_face(mv)
 		_bob_t += delta * 11.0
-		if not $Sprite.is_playing():
-			$Sprite.play(_anim_name())
+	# --- animation state machine (attack/hurt lock, then locomotion) ---
+	var want := ""
+	if _attack_t > 0.0:
+		want = "attack"
+	elif _hurt_t > 0.0:
+		want = "hurt"
+	elif moving:
+		want = _anim_name() + "_walk"
 	else:
-		$Sprite.stop()
-		$Sprite.frame = 0
+		want = _anim_name() + "_idle"
+	if $Sprite.animation != want or not $Sprite.is_playing():
+		$Sprite.play(want)
 	$Sprite.position = Vector2(0, sin(_bob_t) * 5.0 if moving else 0.0) + _lunge
 	emit_signal("changed")
 
 func _face(mv: Vector2) -> void:
 	facing = mv.normalized()
 	$Sprite.flip_h = facing.x < -0.1
-	$Sprite.play(_anim_name())
 
 func _anim_name() -> String:
 	if absf(facing.x) > 0.5:
@@ -271,6 +261,7 @@ func attack() -> void:
 	if dead or attack_cd > 0.0:
 		return
 	attack_cd = 0.42
+	_attack_t = 0.32
 	_lunge = facing * 30.0
 	Sfx.play("swing")
 	var s := slash_scene.instantiate()
@@ -278,6 +269,9 @@ func attack() -> void:
 	s.rotation = facing.angle()
 	s.damage = damage * (2 if frenzy_t > 0.0 else 1)
 	get_parent().add_child(s)
+	var m := _main()
+	if m:
+		m.hitstop(0.05)
 
 func try_surge() -> void:
 	if dead or surge_cd > 0.0 or infection + surge_cost >= 100.0:
@@ -307,13 +301,21 @@ func try_sense() -> void:
 	emit_signal("sensed")
 	emit_signal("changed")
 
-func take_hit(amount: float) -> void:
+func take_hit(amount: float, from_pos: Vector2 = Vector2.ZERO) -> void:
 	if dead or hurt_cd > 0.0:
 		return
 	hurt_cd = 0.6
 	_flash = 0.18
+	_hurt_t = 0.25
 	hp -= amount
 	Sfx.play("hurt")
+	var m := _main()
+	if m:
+		m.shake(0.35)
+	if from_pos != Vector2.ZERO:
+		var d := global_position - from_pos
+		if d.length() > 1.0:
+			_kb = d.normalized() * 420.0
 	add_infection(HIT_INFECTION, true)
 	if hp <= 0.0:
 		hp = 0.0
@@ -358,11 +360,13 @@ func add_xp(n: int) -> void:
 
 func _die() -> void:
 	dead = true
+	$Sprite.play("death")
 	emit_signal("died")
 
 func _turn() -> void:
 	dead = true
 	infection = 100.0
+	$Sprite.play("death")
 	emit_signal("turned")
 """)
 print("PART3 player done")
@@ -385,13 +389,18 @@ var channel_t := 0.0
 var _tick_t := 0.0
 const CHANNEL_NEED := 3.0
 const CELL := 720.0
-const DOOR_GAP := 180.0
+const DOOR_GAP := 280.0
 var dungeon_rooms: Array = []
 var boss: Node = null
 const WEAPON_NAMES := ["WORN SHIV", "RUSTY BLADE", "HUNTER'S EDGE", "PLAGUEBANE"]
 var pad: Area2D
 var joy_id := -1
 var joy_origin := Vector2.ZERO
+var cam: Camera2D                       # cached player camera (shake)
+var pad_glow: Sprite2D = null
+var _hitstop := 0.0                     # hit-stop timer (unscaled)
+var _trauma := 0.0                      # screen-shake trauma 0..1
+var _glow_t := 0.0
 
 const UPGRADES := [
 	{"name": "MAX HP +20", "desc": "Sturdier body"},
@@ -448,6 +457,7 @@ func _to_canvas(p: Vector2) -> Vector2:
 	return get_viewport().get_canvas_transform().affine_inverse() * p
 
 func start_run() -> void:
+	Engine.time_scale = 1.0
 	floor_num = 1
 	build_floor()
 
@@ -464,23 +474,42 @@ func build_floor() -> void:
 	add_child(f)
 	floor_node = f
 	_gen_dungeon()
-	var tile_tex := load("res://assets/floor_tile.png") as Texture2D
+	var floor_texs: Array = [
+		load("res://assets/floor_a.png") as Texture2D,
+		load("res://assets/floor_crack.png") as Texture2D,
+		load("res://assets/floor_grime.png") as Texture2D,
+		load("res://assets/floor_moss.png") as Texture2D,
+	]
+	var floor_w := [0.60, 0.15, 0.15, 0.10]
 	var wall_tex := load("res://assets/wall_block.png") as Texture2D
-	var door_tex := load("res://assets/door.png") as Texture2D
+	var door_tex := load("res://assets/gate_post.png") as Texture2D
+	var glow_tex := load("res://assets/glow_green.png") as Texture2D
 	for r in dungeon_rooms:
 		var c: Vector2 = r["center"]
-		var sp := Sprite2D.new()
-		sp.texture = tile_tex
-		sp.scale = Vector2(CELL, CELL) / tile_tex.get_size()
-		sp.position = c
-		sp.modulate = Color(0.42, 0.44, 0.48)
-		f.add_child(sp)
-		_build_room_walls(f, r, wall_tex, door_tex)
+		# 6x6 varied floor tiles per room (seeded)
+		for tx in range(6):
+			for ty in range(6):
+				var roll := rng.randf()
+				var acc := 0.0
+				var ti := 0
+				for i in range(floor_w.size()):
+					acc += float(floor_w[i])
+					if roll <= acc:
+						ti = i
+						break
+				var sp := Sprite2D.new()
+				sp.texture = floor_texs[ti]
+				sp.scale = Vector2(120, 120) / (floor_texs[ti] as Texture2D).get_size()
+				sp.position = c + Vector2((tx - 2.5) * 120.0, (ty - 2.5) * 120.0)
+				sp.modulate = Color(0.55, 0.57, 0.62)
+				f.add_child(sp)
+		_build_room_walls(f, r, wall_tex, door_tex, glow_tex)
 	# player in entrance room
 	var entrance: Dictionary = _room_by_type("entrance")
 	player = player_scene.instantiate()
 	player.position = entrance["center"]
 	f.add_child(player)
+	cam = player.get_node("Camera") as Camera2D
 	player.died.connect(_on_player_died.bind(false))
 	player.turned.connect(_on_player_died.bind(true))
 	player.sensed.connect(func(): reveal_pickups(4.0))
@@ -497,6 +526,12 @@ func build_floor() -> void:
 	ps.texture = load("res://assets/extract_pad.png")
 	ps.scale = Vector2(0.6, 0.6)
 	pad.add_child(ps)
+	var pg := Sprite2D.new()
+	pg.texture = glow_tex
+	pg.scale = Vector2(2.2, 2.2)
+	pg.modulate = Color(1, 1, 1, 0.5)
+	pad.add_child(pg)
+	pad_glow = pg
 	var shape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
 	circ.radius = 190.0
@@ -592,7 +627,7 @@ func _gen_dungeon() -> void:
 	if not cands.is_empty():
 		(dungeon_rooms[cands[rng.randi() % cands.size()]] as Dictionary)["type"] = "treasure"
 
-func _build_room_walls(f: Node, r: Dictionary, wall_tex: Texture2D, door_tex: Texture2D) -> void:
+func _build_room_walls(f: Node, r: Dictionary, wall_tex: Texture2D, door_tex: Texture2D, glow_tex: Texture2D) -> void:
 	var c: Vector2 = r["center"]
 	var dirs := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
 	for d in dirs:
@@ -605,12 +640,20 @@ func _build_room_walls(f: Node, r: Dictionary, wall_tex: Texture2D, door_tex: Te
 			var off := seg_len / 2.0 + DOOR_GAP / 2.0
 			_tiled_wall(f, edge + tang * off, tang, seg_len, wall_tex)
 			_tiled_wall(f, edge - tang * off, tang, seg_len, wall_tex)
-			var ds := Sprite2D.new()
-			ds.texture = door_tex
-			ds.position = edge
-			ds.scale = Vector2(0.28, 0.28)
-			ds.rotation = PI / 2.0 if n.y != 0.0 else 0.0
-			f.add_child(ds)
+			# Gate: two stone posts flanking the opening, middle stays CLEAR.
+			for sgn in [-1.0, 1.0]:
+				var gp := Sprite2D.new()
+				gp.texture = door_tex  # now the gate post texture
+				gp.position = edge + tang * sgn * (DOOR_GAP / 2.0 + 34.0)
+				gp.rotation = PI / 2.0 if n.y != 0.0 else 0.0
+				f.add_child(gp)
+			# soft infection glow marking the gate
+			var gl := Sprite2D.new()
+			gl.texture = glow_tex
+			gl.position = edge
+			gl.scale = Vector2(1.6, 1.6)
+			gl.modulate = Color(1, 1, 1, 0.35)
+			f.add_child(gl)
 		else:
 			_tiled_wall(f, edge, tang, CELL, wall_tex)
 
@@ -794,6 +837,23 @@ func _on_pad_exit(body: Node2D) -> void:
 		hud.set_channel(-1.0)
 
 func _process(delta: float) -> void:
+	# hit-stop (unscaled)
+	if _hitstop > 0.0:
+		_hitstop -= delta
+		if _hitstop <= 0.0:
+			Engine.time_scale = 1.0
+	# screen shake
+	if _trauma > 0.0:
+		_trauma = maxf(0.0, _trauma - delta * 1.8)
+		if cam:
+			var s := _trauma * _trauma * 26.0
+			cam.offset = Vector2(randf_range(-s, s), randf_range(-s, s))
+	elif cam and cam.offset != Vector2.ZERO:
+		cam.offset = Vector2.ZERO
+	# extraction pad glow pulse
+	if pad_glow and is_instance_valid(pad_glow):
+		_glow_t += delta
+		pad_glow.modulate.a = 0.38 + 0.18 * sin(_glow_t * 3.0)
 	if channeling and player and not player.dead:
 		channel_t += delta
 		_tick_t += delta
@@ -807,6 +867,7 @@ func _process(delta: float) -> void:
 			floor_cleared()
 
 func floor_cleared() -> void:
+	Engine.time_scale = 1.0
 	get_tree().paused = true
 	var picks := UPGRADES.duplicate()
 	picks.shuffle()
@@ -829,7 +890,15 @@ func _on_upgrade(u: Dictionary) -> void:
 	floor_num += 1
 	build_floor()
 
+func hitstop(dur: float) -> void:
+	Engine.time_scale = 0.05
+	_hitstop = dur
+
+func shake(amount: float) -> void:
+	_trauma = minf(1.0, _trauma + amount)
+
 func _on_player_died(turned: bool) -> void:
+	Engine.time_scale = 1.0
 	get_tree().paused = true
 	Sfx.play("turn" if turned else "hurt")
 	hud.show_death(turned, floor_num, player.scrap)
@@ -883,7 +952,7 @@ print("PART5 main done")
 
 # ================= scripts/infected.gd =================
 W("scripts/infected.gd", """extends CharacterBody2D
-## Infected crawler. Chases the carrier, hits raise infection.
+## Infected. Chases the carrier; attacks have a telegraph + lunge.
 
 var max_hp := 3
 var hp := 3
@@ -893,11 +962,15 @@ var dead := false
 var is_boss := false
 var itype := "shambler"
 var xp := 10
-var _frames := ["slime_idle", "slime_hop"]
-var _scale := 0.4
+var _base := "e_shambler"
+var _spr_scale := 1.0
+var _hbox := Vector2.ONE
 var _hit_flash := 0.0
 var _knockback := Vector2.ZERO
 var _bob_t := 0.0
+var _atk_cd := 0.0
+var _windup := 0.0       # attack telegraph timer
+var _dead_t := 0.0
 
 func setup(t: String, floor_num: int) -> void:
 	itype = t
@@ -907,66 +980,108 @@ func setup(t: String, floor_num: int) -> void:
 			speed = 155.0 + floor_num * 4.0
 			touch_damage = 10.0 + floor_num
 			xp = 14
-			_frames = ["inf_runner_0", "inf_runner_1"]
-			_scale = 0.45
+			_base = "e_runner"
+			_spr_scale = 0.9
+			_hbox = Vector2(0.85, 0.85)
 		"brute":
 			max_hp = 9 + floor_num
 			speed = 62.0
 			touch_damage = 22.0 + floor_num
 			xp = 30
-			_frames = ["inf_brute_0", "inf_brute_1"]
-			_scale = 0.62
+			_base = "e_brute"
+			_spr_scale = 1.55
+			_hbox = Vector2(1.6, 1.5)
 		_:  # shambler
 			max_hp = 3 + floor_num / 2
 			speed = 95.0 + floor_num * 6.0
 			touch_damage = 12.0 + floor_num
 			xp = 10
-			_frames = ["inf_shambler_0", "inf_shambler_1"]
-			_scale = 0.5
+			_base = "e_shambler"
+			_spr_scale = 1.0
+			_hbox = Vector2.ONE
 	hp = max_hp
+
+func _main() -> Node:
+	var n: Node = self
+	while n:
+		if n.has_method("hitstop"):
+			return n
+		n = n.get_parent()
+	return null
 
 func _ready() -> void:
 	add_to_group("infected")
 	var sf := SpriteFrames.new()
-	sf.add_animation("chase")
-	sf.set_animation_speed("chase", 5.0)
-	sf.set_animation_loop("chase", true)
-	for f in _frames:
-		sf.add_frame("chase", load("res://assets/%s.png" % f) as Texture2D)
+	_add_frames(sf, "walk",
+		[_base + "_walk_0", _base + "_walk_1", _base + "_walk_2", _base + "_walk_3"],
+		8.0, true)
+	_add_frames(sf, "attack", [_base + "_attack_0", _base + "_attack_1"], 10.0, false)
+	_add_frames(sf, "death", [_base + "_death_0", _base + "_death_1"], 6.0, false)
 	$Sprite.frames = sf
-	$Sprite.play("chase")
-	$Sprite.scale = Vector2(_scale, _scale)
+	$Sprite.play("walk")
+	$Sprite.scale = Vector2(_spr_scale, _spr_scale)
+	$CollisionShape2D.scale = _hbox
+
+func _add_frames(sf: SpriteFrames, name: String, files: Array, fps: float, loop: bool) -> void:
+	sf.add_animation(name)
+	sf.set_animation_speed(name, fps)
+	sf.set_animation_loop(name, loop)
+	for f in files:
+		sf.add_frame(name, load("res://assets/%s.png" % f) as Texture2D)
 
 func _physics_process(delta: float) -> void:
 	if dead:
 		return
 	_hit_flash = maxf(0.0, _hit_flash - delta)
-	$Sprite.modulate = Color(1.6, 0.7, 0.7) if _hit_flash > 0.0 else Color.WHITE
-	_knockback = _knockback.lerp(Vector2.ZERO, 10.0 * delta)
+	_atk_cd = maxf(0.0, _atk_cd - delta)
+	_knockback = _knockback.move_toward(Vector2.ZERO, 1400.0 * delta)
 	var player := get_tree().get_first_node_in_group("player")
 	if player == null or player.dead:
-		velocity = _knockback
+		velocity = velocity.move_toward(_knockback, 1200.0 * delta)
 		move_and_slide()
 		return
 	var to_p: Vector2 = player.global_position - global_position
 	var dist := to_p.length()
-	if dist < 460.0:
-		velocity = to_p.normalized() * speed + _knockback
-		_bob_t += delta * 8.0
-		$Sprite.position.y = sin(_bob_t) * 6.0
+	# --- attack: telegraph, then lunge + damage ---
+	if _windup > 0.0:
+		_windup -= delta
+		velocity = velocity.move_toward(Vector2.ZERO, 1500.0 * delta)
+		$Sprite.modulate = Color(1.9, 0.5, 0.5)  # telegraph flash
+		if $Sprite.animation != "attack":
+			$Sprite.play("attack")
+		if _windup <= 0.0:
+			_atk_cd = 1.1
+			_knockback = to_p.normalized() * 300.0
+			Sfx.play("hit")
+			if dist < 150.0:
+				player.take_hit(touch_damage, global_position)
+	elif dist < 120.0 and _atk_cd <= 0.0:
+		_windup = 0.35
 	else:
-		velocity = velocity.lerp(Vector2.ZERO, 4.0 * delta) + _knockback
-		$Sprite.position.y = 0.0
+		$Sprite.modulate = Color(1.6, 0.7, 0.7) if _hit_flash > 0.0 else Color.WHITE
+		if $Sprite.animation != "walk" or not $Sprite.is_playing():
+			$Sprite.play("walk")
+	# --- steering ---
+	if _windup <= 0.0:
+		if dist < 460.0:
+			velocity = velocity.move_toward(to_p.normalized() * speed, 900.0 * delta)
+			_bob_t += delta * 8.0
+			$Sprite.position.y = sin(_bob_t) * 6.0
+			$Sprite.flip_h = to_p.x < 0.0
+		else:
+			velocity = velocity.move_toward(Vector2.ZERO, 700.0 * delta)
+			$Sprite.position.y = 0.0
+	# --- separation (distance-weighted, anti-stack) ---
 	for o in get_tree().get_nodes_in_group("infected"):
-		if o == self or o.dead:
+		if o == self or (o as Node2D).get("dead"):
 			continue
-		var d: Vector2 = global_position - o.global_position
+		var d: Vector2 = global_position - (o as Node2D).global_position
 		var l := d.length()
-		if l > 1.0 and l < 90.0:
-			velocity += d.normalized() * 60.0
+		if l > 1.0 and l < 110.0:
+			velocity += d.normalized() * (150.0 * (1.0 - l / 110.0))
+	velocity += _knockback
 	move_and_slide()
-	if dist < 95.0:
-		player.take_hit(touch_damage)
+	velocity -= _knockback
 
 func take_damage(amount: int) -> void:
 	if dead:
@@ -980,20 +1095,24 @@ func take_damage(amount: int) -> void:
 			_knockback = away.normalized() * 300.0
 	Sfx.play("hit")
 	if hp <= 0:
-		dead = true
-		collision_layer = 0
-		collision_mask = 0
-		Sfx.play("die")
-		var main: Node = get_tree().current_scene
-		if main == null or not main.has_method("on_infected_killed"):
-			main = get_tree().get_first_node_in_group("game_main")
-		if main != null:
-			main.call("on_infected_killed", global_position, xp, is_boss)
-		var tw := create_tween()
-		tw.set_parallel(true)
-		tw.tween_property($Sprite, "scale", Vector2(0.05, 0.05), 0.28)
-		tw.tween_property($Sprite, "modulate:a", 0.0, 0.28)
-		tw.chain().tween_callback(queue_free)
+		_die()
+
+func _die() -> void:
+	dead = true
+	collision_layer = 0
+	collision_mask = 0
+	Sfx.play("die")
+	$Sprite.play("death")
+	$Sprite.modulate = Color.WHITE
+	var main := _main()
+	if main:
+		main.hitstop(0.09)
+		main.shake(0.3)
+		main.call("on_infected_killed", global_position, xp, is_boss)
+	var tw := create_tween()
+	tw.tween_interval(0.5)          # death pose reads clearly
+	tw.tween_property($Sprite, "modulate:a", 0.0, 0.3)
+	tw.tween_callback(queue_free)
 """)
 print("infected ok")
 
@@ -1124,6 +1243,8 @@ var joy_base: Sprite2D
 var joy_knob: Sprite2D
 var channel_bar: ProgressBar
 var channel_label: Label
+var hp_num: Label
+var hp_fill: StyleBoxFlat
 var draft_panel: PanelContainer
 var death_panel: PanelContainer
 var minimap: Minimap
@@ -1198,6 +1319,8 @@ func _ready() -> void:
 	joy_knob.visible = false
 	add_child(joy_knob)
 	hp_bar = _bar(Vector2(24, 24), Vector2(300, 28), Color(0.85, 0.2, 0.2))
+	hp_fill = hp_bar.get_theme_stylebox("fill") as StyleBoxFlat
+	hp_num = _label(Vector2(30, 26), 20, "100")
 	inf_bar = _bar(Vector2(24, 60), Vector2(300, 28), Color(0.25, 1.0, 0.42))
 	inf_label = _label(Vector2(24, 92), 22, "INFECTION 0%")
 	inf_label.add_theme_color_override("font_color", Color(0.35, 1.0, 0.5))
@@ -1243,10 +1366,16 @@ func _bar(pos: Vector2, size: Vector2, fill: Color) -> ProgressBar:
 	b.show_percentage = false
 	var bg := StyleBoxFlat.new()
 	bg.bg_color = Color(0, 0, 0, 0.6)
+	bg.border_color = Color(1, 1, 1, 0.22)
+	bg.set_border_width_all(2)
 	bg.set_corner_radius_all(6)
 	var fg := StyleBoxFlat.new()
 	fg.bg_color = fill
-	fg.set_corner_radius_all(6)
+	fg.set_corner_radius_all(5)
+	fg.content_margin_left = 2
+	fg.content_margin_right = 2
+	fg.content_margin_top = 2
+	fg.content_margin_bottom = 2
 	b.add_theme_stylebox_override("background", bg)
 	b.add_theme_stylebox_override("fill", fg)
 	add_child(b)
@@ -1374,6 +1503,11 @@ func show_draft(picks: Array, cb: Callable) -> void:
 		b.text = "%s: %s" % [u["name"], u["desc"]]
 		b.custom_minimum_size = Vector2(420, 96)
 		b.add_theme_font_size_override("font_size", 26)
+		b.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
+		b.add_theme_stylebox_override("normal", _btn_style(Color(0.25, 1.0, 0.42), 12))
+		b.add_theme_stylebox_override("hover", _btn_style(Color(0.25, 1.0, 0.42), 12))
+		b.add_theme_stylebox_override("pressed", _btn_style(Color(0.1, 0.6, 0.25), 12))
+		b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 		var uu: Dictionary = u
 		b.pressed.connect(func(): draft_panel.visible = false; cb.call(uu))
 		vb.add_child(b)
@@ -1400,6 +1534,11 @@ func show_death(turned: bool, floor: int, scrap: int) -> void:
 	rb.text = "RUN IT BACK"
 	rb.custom_minimum_size = Vector2(420, 96)
 	rb.add_theme_font_size_override("font_size", 30)
+	rb.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
+	rb.add_theme_stylebox_override("normal", _btn_style(Color(0.25, 1.0, 0.42), 12))
+	rb.add_theme_stylebox_override("hover", _btn_style(Color(0.25, 1.0, 0.42), 12))
+	rb.add_theme_stylebox_override("pressed", _btn_style(Color(0.1, 0.6, 0.25), 12))
+	rb.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	rb.pressed.connect(func(): get_tree().paused = false; get_tree().reload_current_scene())
 	vb.add_child(rb)
 	death_panel.visible = true
@@ -1417,6 +1556,15 @@ func _process(delta: float) -> void:
 		return
 	hp_bar.max_value = player.max_hp
 	hp_bar.value = player.hp
+	hp_num.text = "%d" % int(ceil(player.hp))
+	var frac: float = float(player.hp) / maxf(float(player.max_hp), 1.0)
+	if frac > 0.5:
+		hp_fill.bg_color = Color(0.85, 0.2, 0.2)
+	elif frac > 0.25:
+		hp_fill.bg_color = Color(0.9, 0.65, 0.15)
+	else:
+		var pulse := 0.75 + 0.25 * sin(_t * 8.0)
+		hp_fill.bg_color = Color(1.0 * pulse, 0.15, 0.15)
 	inf_bar.value = player.infection
 	inf_label.text = "INFECTION %d%%" % int(player.infection)
 	if boss_ref != null:
@@ -1461,7 +1609,7 @@ func _ready() -> void:
 	bg.color = Color(0.03, 0.035, 0.05)
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
-	var tile_tex := load("res://assets/floor_tile.png") as Texture2D
+	var tile_tex := load("res://assets/floor_a.png") as Texture2D
 	for ix in range(3):
 		for iy in range(3):
 			var sp := Sprite2D.new()
@@ -1470,7 +1618,7 @@ func _ready() -> void:
 			sp.modulate = Color(0.4, 0.42, 0.46)
 			add_child(sp)
 	var hero := Sprite2D.new()
-	hero.texture = load("res://assets/hero_down_idle.png")
+	hero.texture = load("res://assets/p_down_idle_0.png")
 	hero.position = Vector2(360, 500)
 	add_child(hero)
 	var title := Label.new()
@@ -1492,7 +1640,7 @@ func _ready() -> void:
 	prompt.position = Vector2(190, 1050)
 	add_child(prompt)
 	var ver := Label.new()
-	ver.text = "v0.3"
+	ver.text = "v0.4"
 	ver.add_theme_font_size_override("font_size", 24)
 	ver.add_theme_color_override("font_color", Color(0.45, 0.5, 0.55))
 	ver.position = Vector2(330, 1210)
@@ -1589,6 +1737,28 @@ infected HP/speed/damage + spawn rate. Upgrade draft compounds builds.
 - Deploy fix: root URL was serving the stale phase-1 index.* while the new
   build sat at carrier.html - now exports as index.* (root) and mirrors to
   carrier.* so both URLs serve the current build
+
+## Phase 4 (shipped 2026-09-29) - GATE / ART / ANIMATION / PHYSICS / UI POLISH
+- First-room exit fixed and rebuilt as a real GATE: DOOR_GAP widened
+  180 -> 280, player collision shrunk to 52x64, doorway center has NO
+  collision - two stone gatepost sprites flank the opening with a soft
+  infection glow. Physics walk-through test proves traversal.
+- New character art (48 generated frames): hooded outbreak carrier
+  (glowing infection eyes, blade), SHAMBLER / RUNNER / BRUTE redesigns.
+- Full animation contract: player idle/walk (3 directions, 4-frame walk),
+  attack (3 frames), hurt, death; infected walk (4) / attack (2) / death (2).
+  Attack + hurt anim locks; death pose reads 0.5s then fades.
+- Combat physics: accel/decel movement, knockback with decay, enemy
+  steering smoothing, distance-weighted separation (anti-stack), attack
+  telegraph (0.35s windup) + lunge + cooldown, hit-stop on slash/kill,
+  screen shake (trauma-based) on player hit/kill. Engine.time_scale always
+  reset on death/draft/scene load.
+- UI cleanup: bordered bars, HP number + green/yellow/red states with
+  low-HP pulse, styled draft/death buttons, infection emphasis kept.
+- Graphics: 4 floor tile variants (base/crack/grime/infection moss) in
+  seeded 6x6 per-room mix, gate glows, pulsing extraction pad glow.
+- Run-state persistence across depths still unproven (known issue).
+- QA: walk-through PASS, 22/22 phase-2, 27/27 phase-3, zero script errors.
 
 ## RPG roadmap (Tbandz's blueprint, staged)
 Loop: Explore -> Fight -> Loot -> Upgrade -> Discover -> Boss -> New
