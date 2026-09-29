@@ -1567,5 +1567,42 @@ infected HP/speed/damage + spawn rate. Upgrade draft compounds builds.
 - Dungeon reframe: DEPTH label, darker tiles, vignette
 - QA: 22/22 integration tests green (1 real bug found + fixed: kill rewards
   skipped when main wasn't current_scene - group fallback added)
+
+## Phase 3 (shipped 2026-09-29) - DUNGEON DEPTHS
+- Seeded multi-room dungeons replace the single open floor: entrance /
+  combat / treasure / extraction room types, door gaps between connected
+  rooms, tiled wall blocks, extraction pad in the farthest room (BFS)
+- Chests: touch to open, 3-pickup loot shower, gold marker on minimap
+- Weapons as loot: WORN SHIV -> RUSTY BLADE -> HUNTER'S EDGE -> PLAGUEBANE
+  (tier by depth), each +1 damage with a toast; drop from brutes (12%),
+  chests, and the boss (guaranteed)
+- Boss every 3rd depth: THE WARDEN (brute, 6x HP, 1.5x damage, 1.5x size),
+  red boss HP bar under the DEPTH label, guards the extraction pad,
+  drops weapon + medkit + suppressant + 3 scrap, 150 XP
+- Minimap draws the actual room layout (rects), chest + boss markers
+- Touch fixes: screen->canvas coordinate conversion (fixed button taps
+  double-firing attacks + joystick misplacement), left-half joystick zone,
+  tactile styled buttons (normal/pressed/disabled states), joystick drawn
+  under buttons, v0.3 build label on title
+- QA: 27/27 phase-3 integration tests (connectivity, chest, weapon, boss,
+  drops, minimap, depth-2 rebuild), 22/22 phase-2 regression green
+- Deploy fix: root URL was serving the stale phase-1 index.* while the new
+  build sat at carrier.html - now exports as index.* (root) and mirrors to
+  carrier.* so both URLs serve the current build
+
+## RPG roadmap (Tbandz's blueprint, staged)
+Loop: Explore -> Fight -> Loot -> Upgrade -> Discover -> Boss -> New
+Dungeon -> Repeat. Infection meter stays the signature mechanic.
+- Phase 4: inventory UI + equippable weapons/armor, loot rarity tiers,
+  gold economy, elite infected, miniboss on depth 2 of each cycle
+- Phase 5: combat depth - combos, dodge roll, block, crits, status effects
+  (bleed/burn), elemental damage types, active skills beyond the 3 powers
+- Phase 6: town/hub between cycles - NPCs, merchants, quests, crafting,
+  multiple dungeon biomes, save data, achievements
+- Phase 7: endgame - New Game+, endless dungeon, boss rush, challenge
+  modifiers, daily seeded dungeon
+Rules: classes optional (identity via equipment); hand-designed room
+archetypes with randomized order; no duplicate systems; $0-first;
+iPhone 12 smooth; every build gets a bug-check pass; Tbandz is final QA.
 """)
 print("BUILD COMPLETE")
