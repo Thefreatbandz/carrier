@@ -637,13 +637,31 @@ func fx_trail(pos: Vector2, angle: float, big: bool) -> void:
 	s.texture = load("res://assets/trail_arc.png")
 	s.position = pos
 	s.rotation = angle
-	var sc := 1.1 if big else 0.8
+	var sc := 1.35 if big else 1.0
 	s.scale = Vector2(sc, sc)
-	s.modulate = Color(0.7, 1.0, 0.75, 0.85)
+	# additive glow: brighter, more visible slash arc
+	s.modulate = Color(0.85, 1.0, 0.8, 0.95)
 	floor_node.add_child(s)
 	var tw := create_tween().set_parallel()
-	tw.tween_property(s, "rotation", angle + 1.2, 0.18)
-	tw.tween_property(s, "modulate:a", 0.0, 0.18)
+	tw.tween_property(s, "rotation", angle + 1.4, 0.22).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(s, "scale", Vector2(sc * 1.25, sc * 1.25), 0.22)
+	tw.tween_property(s, "modulate:a", 0.0, 0.22)
+	tw.chain().tween_callback(s.queue_free)
+
+func fx_wisp(pos: Vector2) -> void:
+	# infection wisp rises from a slain enemy (cheap, atmospheric)
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var s := Sprite2D.new()
+	s.texture = load("res://assets/dust.png")
+	s.position = pos
+	s.modulate = Color(0.45, 1.0, 0.55, 0.7)
+	s.scale = Vector2(0.8, 0.8)
+	floor_node.add_child(s)
+	var tw := create_tween().set_parallel()
+	tw.tween_property(s, "position", pos + Vector2(rng.randf_range(-20, 20), -90), 0.8).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(s, "scale", Vector2(1.6, 1.6), 0.8)
+	tw.tween_property(s, "modulate:a", 0.0, 0.8)
 	tw.chain().tween_callback(s.queue_free)
 
 func _on_player_died(turned: bool) -> void:

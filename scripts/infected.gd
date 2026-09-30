@@ -117,8 +117,8 @@ func _physics_process(delta: float) -> void:
 	if _windup <= 0.0:
 		if dist < 460.0:
 			velocity = velocity.move_toward(to_p.normalized() * speed, 900.0 * delta)
-			_bob_t += delta * 8.0
-			$Sprite.position.y = sin(_bob_t) * 6.0
+			_bob_t += delta * 4.0  # synced to 4-frame/8fps walk (2 steps per 0.5s cycle)
+			$Sprite.position.y = sin(_bob_t * TAU) * 4.0
 			$Sprite.flip_h = to_p.x < 0.0
 		else:
 			velocity = velocity.move_toward(Vector2.ZERO, 700.0 * delta)
@@ -165,6 +165,7 @@ func _die() -> void:
 		main.shake(0.3)
 		main.fx_sparks(global_position + Vector2(0, -40), Color(0.4, 1.0, 0.5))
 		main.fx_dust(global_position + Vector2(0, 40), 4)
+		main.fx_wisp(global_position + Vector2(0, -20))
 		main.call("on_infected_killed", global_position, xp, is_boss)
 	var tw := create_tween()
 	tw.tween_interval(0.5)          # death pose reads clearly

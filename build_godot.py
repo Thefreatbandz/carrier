@@ -158,10 +158,12 @@ var sense_cd := 0.0
 var dead := false
 var extract_cleanse := false     # standing on pad
 var _flash := 0.0                # hurt flash timer
-var _bob_t := 0.0                # walk bob phase
+var _idle_t := 0.0               # idle breathing phase
+var _bob_phase := 0.0            # walk bob phase (synced to 6-frame cycle)
 var _lunge := Vector2.ZERO       # attack lunge offset
 var _kb := Vector2.ZERO          # knockback velocity (decays)
 var _attack_t := 0.0             # attack anim lock timer
+var _windup_t := 0.0            # attack anticipation timer
 var _hurt_t := 0.0               # hurt anim lock timer
 # --- dodge roll ---
 var dodge_cd := 0.0
@@ -238,6 +240,7 @@ func _physics_process(delta: float) -> void:
 	sense_t = maxf(0.0, sense_t - delta)
 	_flash = maxf(0.0, _flash - delta)
 	_attack_t = maxf(0.0, _attack_t - delta)
+	_windup_t = maxf(0.0, _windup_t - delta)
 	_hurt_t = maxf(0.0, _hurt_t - delta)
 	_squash_t = maxf(0.0, _squash_t - delta)
 	_lunge = _lunge.lerp(Vector2.ZERO, 14.0 * delta)
@@ -289,19 +292,31 @@ func _physics_process(delta: float) -> void:
 	if moving:
 		_face(mv)
 		last_move_dir = mv.normalized()
-		_bob_t += delta * 11.0
+		# walk phase synced to the 6-frame/15fps cycle (2 footfalls per cycle)
+		_bob_phase += delta * 5.0
+		_idle_t = 0.0
 		_dust_t -= delta
 		if _dust_t <= 0.0 and dodge_t <= 0.0:
 			_dust_t = 0.24
 			var m1 := _main()
 			if m1:
 				m1.fx_dust(global_position + Vector2(0, 66), 1)
+	else:
+		_idle_t += delta * 1.6  # breathing phase
 	# --- squash & stretch ---
-	if dodge_t > 0.0:
+	# attack windup: brief crouch before the strike
+	if _windup_t > 0.0:
+		$Sprite.scale = _base_scale * Vector2(0.92, 1.1)
+	elif dodge_t > 0.0:
+		# dodge dash: stretch along movement
 		$Sprite.scale = _base_scale * Vector2(1.18, 0.82)
 	elif _squash_t > 0.0:
 		var k := 1.0 - _squash_t / 0.16
 		$Sprite.scale = _base_scale * _squash.lerp(Vector2.ONE, clampf(k, 0.0, 1.0))
+	elif not moving:
+		# idle breathing: subtle vertical swell
+		var br := sin(_idle_t * TAU) * 0.018
+		$Sprite.scale = _base_scale * Vector2(1.0 - br * 0.5, 1.0 + br)
 	else:
 		$Sprite.scale = _base_scale
 	# --- animation state machine (attack/hurt lock, then locomotion) ---
@@ -317,7 +332,9 @@ func _physics_process(delta: float) -> void:
 	$Sprite.speed_scale = 2.2 if dodge_t > 0.0 else 1.0
 	if $Sprite.animation != want or not $Sprite.is_playing():
 		$Sprite.play(want)
-	$Sprite.position = Vector2(0, sin(_bob_t) * 3.5 if moving else 0.0) + _lunge
+	# bob synced to walk cycle (not an independent timer); lunge from attacks
+	var bob_y := sin(_bob_phase * TAU) * 2.2 if moving else 0.0
+	$Sprite.position = Vector2(0, bob_y) + _lunge
 	emit_signal("changed")
 
 func _face(mv: Vector2) -> void:
@@ -334,6 +351,7 @@ func attack() -> void:
 		return
 	attack_cd = 0.42
 	_attack_t = 0.32
+	_windup_t = 0.07  # brief anticipation crouch before the strike
 	_lunge = facing * 30.0
 	_squash = Vector2(1.12, 0.88)
 	_squash_t = 0.16
@@ -354,6 +372,7 @@ func attack_heavy() -> void:
 		return
 	attack_cd = 0.6
 	_attack_t = 0.4
+	_windup_t = 0.1  # heavier windup for the charged strike
 	_lunge = facing * 46.0
 	_squash = Vector2(1.22, 0.78)
 	_squash_t = 0.16
@@ -1132,13 +1151,31 @@ func fx_trail(pos: Vector2, angle: float, big: bool) -> void:
 	s.texture = load("res://assets/trail_arc.png")
 	s.position = pos
 	s.rotation = angle
-	var sc := 1.1 if big else 0.8
+	var sc := 1.35 if big else 1.0
 	s.scale = Vector2(sc, sc)
-	s.modulate = Color(0.7, 1.0, 0.75, 0.85)
+	# additive glow: brighter, more visible slash arc
+	s.modulate = Color(0.85, 1.0, 0.8, 0.95)
 	floor_node.add_child(s)
 	var tw := create_tween().set_parallel()
-	tw.tween_property(s, "rotation", angle + 1.2, 0.18)
-	tw.tween_property(s, "modulate:a", 0.0, 0.18)
+	tw.tween_property(s, "rotation", angle + 1.4, 0.22).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(s, "scale", Vector2(sc * 1.25, sc * 1.25), 0.22)
+	tw.tween_property(s, "modulate:a", 0.0, 0.22)
+	tw.chain().tween_callback(s.queue_free)
+
+func fx_wisp(pos: Vector2) -> void:
+	# infection wisp rises from a slain enemy (cheap, atmospheric)
+	if floor_node == null or not is_instance_valid(floor_node):
+		return
+	var s := Sprite2D.new()
+	s.texture = load("res://assets/dust.png")
+	s.position = pos
+	s.modulate = Color(0.45, 1.0, 0.55, 0.7)
+	s.scale = Vector2(0.8, 0.8)
+	floor_node.add_child(s)
+	var tw := create_tween().set_parallel()
+	tw.tween_property(s, "position", pos + Vector2(rng.randf_range(-20, 20), -90), 0.8).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(s, "scale", Vector2(1.6, 1.6), 0.8)
+	tw.tween_property(s, "modulate:a", 0.0, 0.8)
 	tw.chain().tween_callback(s.queue_free)
 
 func _on_player_died(turned: bool) -> void:
@@ -1335,8 +1372,8 @@ func _physics_process(delta: float) -> void:
 	if _windup <= 0.0:
 		if dist < 460.0:
 			velocity = velocity.move_toward(to_p.normalized() * speed, 900.0 * delta)
-			_bob_t += delta * 8.0
-			$Sprite.position.y = sin(_bob_t) * 6.0
+			_bob_t += delta * 4.0  # synced to 4-frame/8fps walk (2 steps per 0.5s cycle)
+			$Sprite.position.y = sin(_bob_t * TAU) * 4.0
 			$Sprite.flip_h = to_p.x < 0.0
 		else:
 			velocity = velocity.move_toward(Vector2.ZERO, 700.0 * delta)
@@ -1383,6 +1420,7 @@ func _die() -> void:
 		main.shake(0.3)
 		main.fx_sparks(global_position + Vector2(0, -40), Color(0.4, 1.0, 0.5))
 		main.fx_dust(global_position + Vector2(0, 40), 4)
+		main.fx_wisp(global_position + Vector2(0, -20))
 		main.call("on_infected_killed", global_position, xp, is_boss)
 	var tw := create_tween()
 	tw.tween_interval(0.5)          # death pose reads clearly
