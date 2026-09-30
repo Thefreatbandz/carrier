@@ -1001,9 +1001,9 @@ func _on_pad_exit(body: Node2D) -> void:
 		hud.set_channel(-1.0)
 
 func _process(delta: float) -> void:
-	# hit-stop (unscaled)
+	# hit-stop (unscaled: divide out time_scale so 0.09s really is 0.09s)
 	if _hitstop > 0.0:
-		_hitstop -= delta
+		_hitstop -= delta / maxf(Engine.time_scale, 0.001)
 		if _hitstop <= 0.0:
 			Engine.time_scale = 1.0
 	# screen shake
@@ -1428,10 +1428,19 @@ const TEX := {
 	"weapon": "sword",
 }
 
+# on-screen target ~52px; source assets are oversized
+const PICKUP_SCALE := {
+	"scrap": 0.16,
+	"suppressant": 0.26,
+	"medkit": 0.15,
+	"weapon": 0.32,
+}
+
 func _ready() -> void:
 	add_to_group("pickups")
 	$Sprite.texture = load("res://assets/%s.png" % TEX.get(kind, "coin_full"))
-	$Sprite.scale = Vector2(0.5, 0.5)
+	var sc: float = PICKUP_SCALE.get(kind, 0.2)
+	$Sprite.scale = Vector2(sc, sc)
 	_base_y = $Sprite.position.y
 	body_entered.connect(_on_body)
 

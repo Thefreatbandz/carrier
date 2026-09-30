@@ -12,10 +12,19 @@ const TEX := {
 	"weapon": "sword",
 }
 
+# on-screen target ~52px; source assets are oversized
+const PICKUP_SCALE := {
+	"scrap": 0.16,
+	"suppressant": 0.26,
+	"medkit": 0.15,
+	"weapon": 0.32,
+}
+
 func _ready() -> void:
 	add_to_group("pickups")
 	$Sprite.texture = load("res://assets/%s.png" % TEX.get(kind, "coin_full"))
-	$Sprite.scale = Vector2(0.5, 0.5)
+	var sc: float = PICKUP_SCALE.get(kind, 0.2)
+	$Sprite.scale = Vector2(sc, sc)
 	_base_y = $Sprite.position.y
 	body_entered.connect(_on_body)
 
