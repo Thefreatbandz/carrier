@@ -45,11 +45,13 @@ environment/defaults/default_clear_color=Color(0.03, 0.035, 0.05, 1)
 # ================= export_presets.cfg =================
 shutil.copy("/home/hatch/workspace/last-shift/export_presets.cfg",
             os.path.join(ROOT, "export_presets.cfg"))
-# fix export path
+# fix export path + keep CARRIER's pck exclusions (shots/concepts/sources)
 p = os.path.join(ROOT, "export_presets.cfg")
 s = open(p).read().replace(
     "/home/hatch/workspace/last-shift/build/web/index.html",
     "/home/hatch/workspace/godot-rpg/carrier/build/web/index.html")
+if "concepts/*" not in s:
+    s = s.replace('exclude_filter="', 'exclude_filter="shots/*,concepts/*,assets-src/*,')
 open(p, "w").write(s)
 print("export_presets.cfg copied + repathed")
 
@@ -1946,7 +1948,7 @@ func _ready() -> void:
 	prompt.position = Vector2(190, 1050)
 	add_child(prompt)
 	var ver := Label.new()
-	ver.text = "v0.4"
+	ver.text = "v0.7"
 	ver.add_theme_font_size_override("font_size", 24)
 	ver.add_theme_color_override("font_color", Color(0.45, 0.5, 0.55))
 	ver.position = Vector2(330, 1210)
