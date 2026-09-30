@@ -580,10 +580,6 @@ func _add(action: String, keys: Array) -> void:
 		if not InputMap.action_has_event(action, ev):
 			InputMap.action_add_event(action, ev)
 
-func _to_canvas(p: Vector2) -> Vector2:
-	# screen pixels -> canvas units (they only match on desktop; phones scale)
-	return get_viewport().get_canvas_transform().affine_inverse() * p
-
 func start_run() -> void:
 	Engine.time_scale = 1.0
 	floor_num = 1
@@ -1175,7 +1171,10 @@ func _input(event: InputEvent) -> void:
 			player.try_dodge(player.last_move_dir)
 	if event is InputEventScreenTouch:
 		var t := event as InputEventScreenTouch
-		var cpos := _to_canvas(t.position)
+		# NOTE: on web Godot delivers touch positions ALREADY in canvas units;
+		# converting again via the canvas transform double-converts into garbage
+		# (this was the invisible-joystick bug: cpos went negative off-screen).
+		var cpos := t.position
 		if t.pressed:
 			if cpos.x < 360.0:
 				# left half = floating joystick. Dodge has its own button now:
@@ -1203,7 +1202,7 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventScreenDrag:
 		var d := event as InputEventScreenDrag
 		if d.index == joy_id and player:
-			var raw := (_to_canvas(d.position) - joy_origin) / 110.0
+			var raw := (d.position - joy_origin) / 110.0
 			var rl := raw.length()
 			var v := Vector2.ZERO
 			if rl > JOY_DEADZONE:
