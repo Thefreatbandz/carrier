@@ -3,15 +3,15 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://wdf1e5ic8bri"
-path="res://.godot/imported/carrier.icon.png-2b24206c8ec81bf7a019e676c5a55cb7.ctex"
+path="res://.godot/imported/carrier.icon.png-d9851b10e302372d8a2cd09e92348529.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://build/web/carrier.icon.png"
-dest_files=["res://.godot/imported/carrier.icon.png-2b24206c8ec81bf7a019e676c5a55cb7.ctex"]
+source_file="res://docs/carrier.icon.png"
+dest_files=["res://.godot/imported/carrier.icon.png-d9851b10e302372d8a2cd09e92348529.ctex"]
 
 [params]
 

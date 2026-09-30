@@ -25,7 +25,8 @@ var xp := 0
 var xp_next := 45
 
 var facing := Vector2.DOWN
-var joystick := Vector2.ZERO     # set by HUD touch controls
+var joystick := Vector2.ZERO     # target set by HUD touch controls
+var _joy_sm := Vector2.ZERO      # smoothed joystick (kills thumb jitter/chop)
 var attack_cd := 0.0
 var hurt_cd := 0.0
 var surge_t := 0.0               # active power timers
@@ -70,7 +71,8 @@ func _ready() -> void:
 			["p_%s_idle_0" % dir, "p_%s_idle_1" % dir], 4.0, true)
 		_add_frames(sf, dir + "_walk",
 			["p_%s_walk_0" % dir, "p_%s_walk_1" % dir,
-			 "p_%s_walk_2" % dir, "p_%s_walk_3" % dir], 12.0, true)
+			 "p_%s_walk_2" % dir, "p_%s_walk_3" % dir,
+			 "p_%s_walk_4" % dir, "p_%s_walk_5" % dir], 15.0, true)
 	_add_frames(sf, "attack", ["p_attack_0", "p_attack_1", "p_attack_2"], 20.0, false)
 	_add_frames(sf, "hurt", ["p_hurt_0"], 8.0, false)
 	_add_frames(sf, "death", ["p_death_0", "p_death_1"], 6.0, false)
@@ -139,7 +141,9 @@ func _physics_process(delta: float) -> void:
 		_heavy_armed = true
 	# --- movement (accel/decel, knockback decays, dodge burst) ---
 	var iv := Input.get_vector("mv_left", "mv_right", "mv_up", "mv_down")
-	var mv := iv + joystick
+	# smooth the thumbstick so velocity glides instead of snapping (no chop)
+	_joy_sm = _joy_sm.lerp(joystick, 1.0 - exp(-16.0 * delta))
+	var mv := iv + _joy_sm
 	if mv.length() > 1.0:
 		mv = mv.normalized()
 	if dodge_t > 0.0:
@@ -193,7 +197,7 @@ func _physics_process(delta: float) -> void:
 	$Sprite.speed_scale = 2.2 if dodge_t > 0.0 else 1.0
 	if $Sprite.animation != want or not $Sprite.is_playing():
 		$Sprite.play(want)
-	$Sprite.position = Vector2(0, sin(_bob_t) * 5.0 if moving else 0.0) + _lunge
+	$Sprite.position = Vector2(0, sin(_bob_t) * 3.5 if moving else 0.0) + _lunge
 	emit_signal("changed")
 
 func _face(mv: Vector2) -> void:

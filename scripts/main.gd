@@ -22,6 +22,7 @@ const WEAPON_NAMES := ["WORN SHIV", "RUSTY BLADE", "HUNTER'S EDGE", "PLAGUEBANE"
 var pad: Area2D
 var joy_id := -1
 var joy_origin := Vector2.ZERO
+const JOY_DEADZONE := 0.22   # thumb rest zone: no drift, no jitter
 var cam: Camera2D                       # cached player camera (shake)
 var pad_glow: Sprite2D = null
 var _hitstop := 0.0                     # hit-stop timer (unscaled)
@@ -29,7 +30,7 @@ var _trauma := 0.0                      # screen-shake trauma 0..1
 var _glow_t := 0.0
 var run := {}                           # run state: survives floor rebuilds
 var atk_touch_id := -1                  # right-half tap holding attack
-var last_tap_msec := 0                  # double-tap dodge tracking
+var last_tap_msec := 0                  # (unused since dodge got its own button)
 
 const UPGRADES := [
 	{"name": "MAX HP +20", "desc": "Sturdier body"},
@@ -656,7 +657,7 @@ func _on_player_died(turned: bool) -> void:
 	hud.show_death(turned, floor_num, player.scrap)
 
 func _on_power_btn(pos: Vector2) -> bool:
-	for b in [hud.surge_btn, hud.frenzy_btn, hud.sense_btn, hud.atk_btn]:
+	for b in [hud.surge_btn, hud.frenzy_btn, hud.sense_btn, hud.atk_btn, hud.dodge_btn]:
 		if b and b.get_global_rect().has_point(pos):
 			return true
 	return false
@@ -682,14 +683,9 @@ func _input(event: InputEvent) -> void:
 		var cpos := _to_canvas(t.position)
 		if t.pressed:
 			if cpos.x < 360.0:
-				# double-tap left half = dodge roll
-				var now := Time.get_ticks_msec()
-				if now - last_tap_msec < 350:
-					if player:
-						player.try_dodge(player.last_move_dir)
-					last_tap_msec = 0
-				else:
-					last_tap_msec = now
+				# left half = floating joystick. Dodge has its own button now:
+				# double-tap kept firing accidental rolls while repositioning
+				# the thumb, which is what made movement feel broken.
 				if joy_id == -1:
 					joy_id = t.index
 					joy_origin = cpos
@@ -712,8 +708,13 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventScreenDrag:
 		var d := event as InputEventScreenDrag
 		if d.index == joy_id and player:
-			var v := (_to_canvas(d.position) - joy_origin) / 110.0
-			if v.length() > 1.0:
-				v = v.normalized()
+			var raw := (_to_canvas(d.position) - joy_origin) / 110.0
+			var rl := raw.length()
+			var v := Vector2.ZERO
+			if rl > JOY_DEADZONE:
+				# smoothstep response: gentle near center, full throw at the rim
+				var t := clampf((rl - JOY_DEADZONE) / (1.0 - JOY_DEADZONE), 0.0, 1.0)
+				t = t * t * (3.0 - 2.0 * t)
+				v = raw / rl * t
 			player.joystick = v
 			hud.move_knob(joy_origin + v * 110.0)

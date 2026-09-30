@@ -17,6 +17,7 @@ var surge_btn: Button
 var frenzy_btn: Button
 var sense_btn: Button
 var atk_btn: Button
+var dodge_btn: Button
 var joy_base: Sprite2D
 var joy_knob: Sprite2D
 var channel_bar: ProgressBar
@@ -131,6 +132,16 @@ func _ready() -> void:
 	sense_btn = _power_btn(Vector2(430, 1100), "SENSE", Color(0.3, 1.0, 1.0), Vector2(140, 100), 16)
 	atk_btn = _power_btn(Vector2(585, 990), "ATTACK", Color(1.0, 0.85, 0.2), Vector2(125, 175), 60)
 	atk_btn.add_theme_font_size_override("font_size", 28)
+	# DODGE: its own button above ATTACK. Double-tap on the joystick kept
+	# firing accidental rolls; a real button is precise.
+	dodge_btn = _power_btn(Vector2(585, 862), "DODGE", Color(0.55, 0.85, 1.0), Vector2(125, 110), 60)
+	dodge_btn.add_theme_font_size_override("font_size", 24)
+	dodge_btn.pressed.connect(func():
+		if player and not player.dead:
+			var d: Vector2 = player.joystick
+			if d.length() < 0.1:
+				d = player.facing
+			player.try_dodge(d))
 	surge_btn.pressed.connect(func(): if player: player.try_surge())
 	frenzy_btn.pressed.connect(func(): if player: player.try_frenzy())
 	sense_btn.pressed.connect(func(): if player: player.try_sense())
@@ -389,6 +400,12 @@ func _process(delta: float) -> void:
 	_upd_btn(surge_btn, "SURGE", player.surge_cost, player.surge_cd, player.infection)
 	_upd_btn(frenzy_btn, "FRENZY", player.frenzy_cost, player.frenzy_cd, player.infection)
 	_upd_btn(sense_btn, "SENSE", player.sense_cost, player.sense_cd, player.infection)
+	if player.dodge_cd > 0.0:
+		dodge_btn.text = "DODGE %ds" % int(ceil(player.dodge_cd))
+		dodge_btn.disabled = true
+	else:
+		dodge_btn.text = "DODGE"
+		dodge_btn.disabled = false
 
 func _upd_btn(b: Button, name: String, cost: float, cd: float, inf: float) -> void:
 	if cd > 0.0:

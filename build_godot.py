@@ -145,7 +145,8 @@ var xp := 0
 var xp_next := 45
 
 var facing := Vector2.DOWN
-var joystick := Vector2.ZERO     # set by HUD touch controls
+var joystick := Vector2.ZERO     # target set by HUD touch controls
+var _joy_sm := Vector2.ZERO      # smoothed joystick (kills thumb jitter/chop)
 var attack_cd := 0.0
 var hurt_cd := 0.0
 var surge_t := 0.0               # active power timers
@@ -190,7 +191,8 @@ func _ready() -> void:
 			["p_%s_idle_0" % dir, "p_%s_idle_1" % dir], 4.0, true)
 		_add_frames(sf, dir + "_walk",
 			["p_%s_walk_0" % dir, "p_%s_walk_1" % dir,
-			 "p_%s_walk_2" % dir, "p_%s_walk_3" % dir], 12.0, true)
+			 "p_%s_walk_2" % dir, "p_%s_walk_3" % dir,
+			 "p_%s_walk_4" % dir, "p_%s_walk_5" % dir], 15.0, true)
 	_add_frames(sf, "attack", ["p_attack_0", "p_attack_1", "p_attack_2"], 20.0, false)
 	_add_frames(sf, "hurt", ["p_hurt_0"], 8.0, false)
 	_add_frames(sf, "death", ["p_death_0", "p_death_1"], 6.0, false)
@@ -259,7 +261,9 @@ func _physics_process(delta: float) -> void:
 		_heavy_armed = true
 	# --- movement (accel/decel, knockback decays, dodge burst) ---
 	var iv := Input.get_vector("mv_left", "mv_right", "mv_up", "mv_down")
-	var mv := iv + joystick
+	# smooth the thumbstick so velocity glides instead of snapping (no chop)
+	_joy_sm = _joy_sm.lerp(joystick, 1.0 - exp(-16.0 * delta))
+	var mv := iv + _joy_sm
 	if mv.length() > 1.0:
 		mv = mv.normalized()
 	if dodge_t > 0.0:
@@ -313,7 +317,7 @@ func _physics_process(delta: float) -> void:
 	$Sprite.speed_scale = 2.2 if dodge_t > 0.0 else 1.0
 	if $Sprite.animation != want or not $Sprite.is_playing():
 		$Sprite.play(want)
-	$Sprite.position = Vector2(0, sin(_bob_t) * 5.0 if moving else 0.0) + _lunge
+	$Sprite.position = Vector2(0, sin(_bob_t) * 3.5 if moving else 0.0) + _lunge
 	emit_signal("changed")
 
 func _face(mv: Vector2) -> void:
@@ -513,6 +517,7 @@ const WEAPON_NAMES := ["WORN SHIV", "RUSTY BLADE", "HUNTER'S EDGE", "PLAGUEBANE"
 var pad: Area2D
 var joy_id := -1
 var joy_origin := Vector2.ZERO
+const JOY_DEADZONE := 0.22   # thumb rest zone: no drift, no jitter
 var cam: Camera2D                       # cached player camera (shake)
 var pad_glow: Sprite2D = null
 var _hitstop := 0.0                     # hit-stop timer (unscaled)
@@ -520,7 +525,7 @@ var _trauma := 0.0                      # screen-shake trauma 0..1
 var _glow_t := 0.0
 var run := {}                           # run state: survives floor rebuilds
 var atk_touch_id := -1                  # right-half tap holding attack
-var last_tap_msec := 0                  # double-tap dodge tracking
+var last_tap_msec := 0                  # (unused since dodge got its own button)
 
 const UPGRADES := [
 	{"name": "MAX HP +20", "desc": "Sturdier body"},
@@ -1147,7 +1152,7 @@ func _on_player_died(turned: bool) -> void:
 	hud.show_death(turned, floor_num, player.scrap)
 
 func _on_power_btn(pos: Vector2) -> bool:
-	for b in [hud.surge_btn, hud.frenzy_btn, hud.sense_btn, hud.atk_btn]:
+	for b in [hud.surge_btn, hud.frenzy_btn, hud.sense_btn, hud.atk_btn, hud.dodge_btn]:
 		if b and b.get_global_rect().has_point(pos):
 			return true
 	return false
@@ -1173,14 +1178,9 @@ func _input(event: InputEvent) -> void:
 		var cpos := _to_canvas(t.position)
 		if t.pressed:
 			if cpos.x < 360.0:
-				# double-tap left half = dodge roll
-				var now := Time.get_ticks_msec()
-				if now - last_tap_msec < 350:
-					if player:
-						player.try_dodge(player.last_move_dir)
-					last_tap_msec = 0
-				else:
-					last_tap_msec = now
+				# left half = floating joystick. Dodge has its own button now:
+				# double-tap kept firing accidental rolls while repositioning
+				# the thumb, which is what made movement feel broken.
 				if joy_id == -1:
 					joy_id = t.index
 					joy_origin = cpos
@@ -1203,9 +1203,14 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventScreenDrag:
 		var d := event as InputEventScreenDrag
 		if d.index == joy_id and player:
-			var v := (_to_canvas(d.position) - joy_origin) / 110.0
-			if v.length() > 1.0:
-				v = v.normalized()
+			var raw := (_to_canvas(d.position) - joy_origin) / 110.0
+			var rl := raw.length()
+			var v := Vector2.ZERO
+			if rl > JOY_DEADZONE:
+				# smoothstep response: gentle near center, full throw at the rim
+				var t := clampf((rl - JOY_DEADZONE) / (1.0 - JOY_DEADZONE), 0.0, 1.0)
+				t = t * t * (3.0 - 2.0 * t)
+				v = raw / rl * t
 			player.joystick = v
 			hud.move_knob(joy_origin + v * 110.0)
 """)
@@ -1519,6 +1524,7 @@ var surge_btn: Button
 var frenzy_btn: Button
 var sense_btn: Button
 var atk_btn: Button
+var dodge_btn: Button
 var joy_base: Sprite2D
 var joy_knob: Sprite2D
 var channel_bar: ProgressBar
@@ -1633,6 +1639,16 @@ func _ready() -> void:
 	sense_btn = _power_btn(Vector2(430, 1100), "SENSE", Color(0.3, 1.0, 1.0), Vector2(140, 100), 16)
 	atk_btn = _power_btn(Vector2(585, 990), "ATTACK", Color(1.0, 0.85, 0.2), Vector2(125, 175), 60)
 	atk_btn.add_theme_font_size_override("font_size", 28)
+	# DODGE: its own button above ATTACK. Double-tap on the joystick kept
+	# firing accidental rolls; a real button is precise.
+	dodge_btn = _power_btn(Vector2(585, 862), "DODGE", Color(0.55, 0.85, 1.0), Vector2(125, 110), 60)
+	dodge_btn.add_theme_font_size_override("font_size", 24)
+	dodge_btn.pressed.connect(func():
+		if player and not player.dead:
+			var d: Vector2 = player.joystick
+			if d.length() < 0.1:
+				d = player.facing
+			player.try_dodge(d))
 	surge_btn.pressed.connect(func(): if player: player.try_surge())
 	frenzy_btn.pressed.connect(func(): if player: player.try_frenzy())
 	sense_btn.pressed.connect(func(): if player: player.try_sense())
@@ -1891,6 +1907,12 @@ func _process(delta: float) -> void:
 	_upd_btn(surge_btn, "SURGE", player.surge_cost, player.surge_cd, player.infection)
 	_upd_btn(frenzy_btn, "FRENZY", player.frenzy_cost, player.frenzy_cd, player.infection)
 	_upd_btn(sense_btn, "SENSE", player.sense_cost, player.sense_cd, player.infection)
+	if player.dodge_cd > 0.0:
+		dodge_btn.text = "DODGE %ds" % int(ceil(player.dodge_cd))
+		dodge_btn.disabled = true
+	else:
+		dodge_btn.text = "DODGE"
+		dodge_btn.disabled = false
 
 func _upd_btn(b: Button, name: String, cost: float, cd: float, inf: float) -> void:
 	if cd > 0.0:
@@ -1948,7 +1970,7 @@ func _ready() -> void:
 	prompt.position = Vector2(190, 1050)
 	add_child(prompt)
 	var ver := Label.new()
-	ver.text = "v0.7"
+	ver.text = "v0.8"
 	ver.add_theme_font_size_override("font_size", 24)
 	ver.add_theme_color_override("font_color", Color(0.45, 0.5, 0.55))
 	ver.position = Vector2(330, 1210)
