@@ -175,6 +175,16 @@ var _ghost_t := 0.0
 # --- charged heavy attack (hold attack) ---
 var touch_atk_held := false
 var heavy_mult := 2.5
+# --- upgrade stats (persist across floors via main's run dict) ---
+var attack_speed_mult := 1.0   # SWIFT STRIKES: faster swings
+var lifesteal := 0             # BLOODTHIRST: HP healed per kill
+var scavenger := 0             # SCAVENGER: bonus scrap per kill
+var damage_taken_mult := 1.0   # THICK SKIN: reduced incoming damage
+var xp_mult := 1.0             # GREEDY: more XP from kills
+var surge_dur_mult := 1.0      # ENDURING SURGE
+var frenzy_dur_mult := 1.0     # ENDURING FRENZY
+var passive_infect_mult := 1.0 # STABLE STRAIN: slower passive infection
+var adrenaline := false        # ADRENALINE: +30% speed below 30% HP
 var _hold_t := 0.0
 var _heavy_armed := true
 # --- juice ---
@@ -246,7 +256,7 @@ func _physics_process(delta: float) -> void:
 	_lunge = _lunge.lerp(Vector2.ZERO, 14.0 * delta)
 	$Sprite.modulate = Color(1.8, 0.45, 0.45) if _flash > 0.0 else Color.WHITE
 	# --- infection drift ---
-	add_infection(PASSIVE_INFECTION * delta, true)
+	add_infection(PASSIVE_INFECTION * passive_infect_mult * delta, true)
 	if extract_cleanse:
 		add_infection(-5.0 * delta, true)
 	# --- hold attack to charge a heavy ---
@@ -281,6 +291,8 @@ func _physics_process(delta: float) -> void:
 		var spd := BASE_SPEED * move_mult
 		if surge_t > 0.0:
 			spd *= 1.8
+		if adrenaline and hp < max_hp * 0.3:
+			spd *= 1.3  # ADRENALINE: desperate speed at low HP
 		if infection >= 70.0:
 			spd *= 1.08  # infection frenzy: faster, but fragile
 		var accel := 2400.0 if mv.length() > 0.1 else 2000.0
@@ -349,7 +361,7 @@ func _anim_name() -> String:
 func attack() -> void:
 	if dead or attack_cd > 0.0 or dodge_t > 0.0:
 		return
-	attack_cd = 0.42
+	attack_cd = 0.42 / attack_speed_mult
 	_attack_t = 0.32
 	_windup_t = 0.07  # brief anticipation crouch before the strike
 	_lunge = facing * 30.0
@@ -370,7 +382,7 @@ func attack_heavy() -> void:
 	# charged heavy: hold attack 0.45s. Big arc, big damage, costs infection.
 	if dead or dodge_t > 0.0:
 		return
-	attack_cd = 0.6
+	attack_cd = 0.6 / attack_speed_mult
 	_attack_t = 0.4
 	_windup_t = 0.1  # heavier windup for the charged strike
 	_lunge = facing * 46.0
@@ -415,7 +427,7 @@ func try_surge() -> void:
 	if dead or surge_cd > 0.0 or infection + surge_cost >= 100.0:
 		return
 	add_infection(surge_cost)
-	surge_t = 3.0
+	surge_t = 3.0 * surge_dur_mult
 	surge_cd = 8.0
 	Sfx.play("surge")
 	emit_signal("changed")
@@ -424,7 +436,7 @@ func try_frenzy() -> void:
 	if dead or frenzy_cd > 0.0 or infection + frenzy_cost >= 100.0:
 		return
 	add_infection(frenzy_cost)
-	frenzy_t = 5.0
+	frenzy_t = 5.0 * frenzy_dur_mult
 	frenzy_cd = 12.0
 	Sfx.play("frenzy")
 	emit_signal("changed")
@@ -447,7 +459,7 @@ func take_hit(amount: float, from_pos: Vector2 = Vector2.ZERO) -> void:
 	_hurt_t = 0.25
 	_squash = Vector2(1.18, 0.82)
 	_squash_t = 0.16
-	hp -= amount * (1.0 + infection / 200.0)  # infection risk: fragile when riding high
+	hp -= amount * (1.0 + infection / 200.0) * damage_taken_mult  # infection risk: fragile when riding high
 	Sfx.play("hurt")
 	var m := _main()
 	if m:
@@ -485,7 +497,7 @@ func add_scrap(n: int) -> void:
 func add_xp(n: int) -> void:
 	if dead:
 		return
-	xp += n
+	xp += int(round(n * xp_mult))
 	while xp >= xp_next:
 		xp -= xp_next
 		level += 1
@@ -553,6 +565,16 @@ const UPGRADES := [
 	{"name": "CHEAP POWERS", "desc": "Powers cost 25% less"},
 	{"name": "SWIFT DODGE", "desc": "Dodge recharges 30% faster"},
 	{"name": "HEAVY HITTER", "desc": "Charged heavies hit 40% harder"},
+	{"name": "CLEANSE −30", "desc": "Purge 30 infection now"},
+	{"name": "SWIFT STRIKES", "desc": "Attack 25% faster"},
+	{"name": "BLOODTHIRST", "desc": "Kills heal 3 HP"},
+	{"name": "SCAVENGER", "desc": "Kills drop +1 scrap"},
+	{"name": "THICK SKIN", "desc": "Take 15% less damage"},
+	{"name": "GREEDY", "desc": "+25% XP from kills"},
+	{"name": "ENDURING SURGE", "desc": "Surge lasts 50% longer"},
+	{"name": "ENDURING FRENZY", "desc": "Frenzy lasts 50% longer"},
+	{"name": "STABLE STRAIN", "desc": "Infection builds 30% slower"},
+	{"name": "ADRENALINE", "desc": "+30% speed below 30% HP"},
 ]
 
 class SenseMarker extends Node2D:
@@ -608,9 +630,13 @@ func start_run() -> void:
 func _default_run() -> Dictionary:
 	return {
 		"max_hp": 100.0, "hp": 100.0, "damage": 1, "move_mult": 1.0,
-		"surge_cost": 15.0, "frenzy_cost": 20.0, "scrap": 0,
+		"surge_cost": 15.0, "frenzy_cost": 20.0, "sense_cost": 10.0, "scrap": 0,
 		"level": 1, "xp": 0, "xp_next": 45, "infection": 0.0,
 		"dodge_cd_max": 1.1, "heavy_mult": 2.5,
+		"attack_speed_mult": 1.0, "lifesteal": 0, "scavenger": 0,
+		"damage_taken_mult": 1.0, "xp_mult": 1.0,
+		"surge_dur_mult": 1.0, "frenzy_dur_mult": 1.0,
+		"passive_infect_mult": 1.0, "adrenaline": false,
 	}
 
 func _snapshot_run() -> void:
@@ -630,6 +656,16 @@ func _snapshot_run() -> void:
 	run["infection"] = player.infection
 	run["dodge_cd_max"] = player.dodge_cd_max
 	run["heavy_mult"] = player.heavy_mult
+	run["attack_speed_mult"] = player.attack_speed_mult
+	run["lifesteal"] = player.lifesteal
+	run["scavenger"] = player.scavenger
+	run["damage_taken_mult"] = player.damage_taken_mult
+	run["xp_mult"] = player.xp_mult
+	run["surge_dur_mult"] = player.surge_dur_mult
+	run["frenzy_dur_mult"] = player.frenzy_dur_mult
+	run["passive_infect_mult"] = player.passive_infect_mult
+	run["adrenaline"] = player.adrenaline
+	run["sense_cost"] = player.sense_cost
 
 func _apply_run(p: Node) -> void:
 	p.max_hp = float(run["max_hp"])
@@ -645,6 +681,16 @@ func _apply_run(p: Node) -> void:
 	p.infection = float(run["infection"])
 	p.dodge_cd_max = float(run["dodge_cd_max"])
 	p.heavy_mult = float(run["heavy_mult"])
+	p.attack_speed_mult = float(run["attack_speed_mult"])
+	p.lifesteal = int(run["lifesteal"])
+	p.scavenger = int(run["scavenger"])
+	p.damage_taken_mult = float(run["damage_taken_mult"])
+	p.xp_mult = float(run["xp_mult"])
+	p.surge_dur_mult = float(run["surge_dur_mult"])
+	p.frenzy_dur_mult = float(run["frenzy_dur_mult"])
+	p.passive_infect_mult = float(run["passive_infect_mult"])
+	p.adrenaline = bool(run["adrenaline"])
+	p.sense_cost = float(run["sense_cost"])
 
 func build_floor() -> void:
 	# clear old floor (deferred; new one tracked via floor_node)
@@ -986,6 +1032,10 @@ func spawn_pickup(kind: String, pos: Vector2) -> void:
 func on_infected_killed(pos: Vector2, xp: int, was_boss: bool = false) -> void:
 	if player and not player.dead:
 		player.add_xp(xp)
+		if player.lifesteal > 0:
+			player.heal(float(player.lifesteal))  # BLOODTHIRST
+		for i in range(player.scavenger):
+			spawn_pickup("scrap", pos + Vector2(rng.randf_range(-60, 60), rng.randf_range(-60, 60)))
 	if was_boss:
 		hud.show_toast("WARDEN SLAIN")
 		spawn_pickup("weapon", pos + Vector2(-60, 0))
@@ -1074,10 +1124,31 @@ func _on_upgrade(u: Dictionary) -> void:
 		"CHEAP POWERS":
 			run["surge_cost"] = 11.0
 			run["frenzy_cost"] = 15.0
+			run["sense_cost"] = 7.5
 		"SWIFT DODGE":
 			run["dodge_cd_max"] = float(run["dodge_cd_max"]) * 0.7
 		"HEAVY HITTER":
 			run["heavy_mult"] = float(run["heavy_mult"]) * 1.4
+		"CLEANSE −30":
+			run["infection"] = maxf(0.0, float(run["infection"]) - 30.0)
+		"SWIFT STRIKES":
+			run["attack_speed_mult"] = float(run["attack_speed_mult"]) * 1.25
+		"BLOODTHIRST":
+			run["lifesteal"] = int(run["lifesteal"]) + 3
+		"SCAVENGER":
+			run["scavenger"] = int(run["scavenger"]) + 1
+		"THICK SKIN":
+			run["damage_taken_mult"] = float(run["damage_taken_mult"]) * 0.85
+		"GREEDY":
+			run["xp_mult"] = float(run["xp_mult"]) * 1.25
+		"ENDURING SURGE":
+			run["surge_dur_mult"] = float(run["surge_dur_mult"]) * 1.5
+		"ENDURING FRENZY":
+			run["frenzy_dur_mult"] = float(run["frenzy_dur_mult"]) * 1.5
+		"STABLE STRAIN":
+			run["passive_infect_mult"] = float(run["passive_infect_mult"]) * 0.7
+		"ADRENALINE":
+			run["adrenaline"] = true
 	# descend: catch your breath (+25% HP), but the infection comes with you
 	run["hp"] = minf(float(run["max_hp"]), float(run["hp"]) + float(run["max_hp"]) * 0.25)
 	floor_num += 1

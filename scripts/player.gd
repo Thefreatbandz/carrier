@@ -55,6 +55,16 @@ var _ghost_t := 0.0
 # --- charged heavy attack (hold attack) ---
 var touch_atk_held := false
 var heavy_mult := 2.5
+# --- upgrade stats (persist across floors via main's run dict) ---
+var attack_speed_mult := 1.0   # SWIFT STRIKES: faster swings
+var lifesteal := 0             # BLOODTHIRST: HP healed per kill
+var scavenger := 0             # SCAVENGER: bonus scrap per kill
+var damage_taken_mult := 1.0   # THICK SKIN: reduced incoming damage
+var xp_mult := 1.0             # GREEDY: more XP from kills
+var surge_dur_mult := 1.0      # ENDURING SURGE
+var frenzy_dur_mult := 1.0     # ENDURING FRENZY
+var passive_infect_mult := 1.0 # STABLE STRAIN: slower passive infection
+var adrenaline := false        # ADRENALINE: +30% speed below 30% HP
 var _hold_t := 0.0
 var _heavy_armed := true
 # --- juice ---
@@ -126,7 +136,7 @@ func _physics_process(delta: float) -> void:
 	_lunge = _lunge.lerp(Vector2.ZERO, 14.0 * delta)
 	$Sprite.modulate = Color(1.8, 0.45, 0.45) if _flash > 0.0 else Color.WHITE
 	# --- infection drift ---
-	add_infection(PASSIVE_INFECTION * delta, true)
+	add_infection(PASSIVE_INFECTION * passive_infect_mult * delta, true)
 	if extract_cleanse:
 		add_infection(-5.0 * delta, true)
 	# --- hold attack to charge a heavy ---
@@ -161,6 +171,8 @@ func _physics_process(delta: float) -> void:
 		var spd := BASE_SPEED * move_mult
 		if surge_t > 0.0:
 			spd *= 1.8
+		if adrenaline and hp < max_hp * 0.3:
+			spd *= 1.3  # ADRENALINE: desperate speed at low HP
 		if infection >= 70.0:
 			spd *= 1.08  # infection frenzy: faster, but fragile
 		var accel := 2400.0 if mv.length() > 0.1 else 2000.0
@@ -229,7 +241,7 @@ func _anim_name() -> String:
 func attack() -> void:
 	if dead or attack_cd > 0.0 or dodge_t > 0.0:
 		return
-	attack_cd = 0.42
+	attack_cd = 0.42 / attack_speed_mult
 	_attack_t = 0.32
 	_windup_t = 0.07  # brief anticipation crouch before the strike
 	_lunge = facing * 30.0
@@ -250,7 +262,7 @@ func attack_heavy() -> void:
 	# charged heavy: hold attack 0.45s. Big arc, big damage, costs infection.
 	if dead or dodge_t > 0.0:
 		return
-	attack_cd = 0.6
+	attack_cd = 0.6 / attack_speed_mult
 	_attack_t = 0.4
 	_windup_t = 0.1  # heavier windup for the charged strike
 	_lunge = facing * 46.0
@@ -295,7 +307,7 @@ func try_surge() -> void:
 	if dead or surge_cd > 0.0 or infection + surge_cost >= 100.0:
 		return
 	add_infection(surge_cost)
-	surge_t = 3.0
+	surge_t = 3.0 * surge_dur_mult
 	surge_cd = 8.0
 	Sfx.play("surge")
 	emit_signal("changed")
@@ -304,7 +316,7 @@ func try_frenzy() -> void:
 	if dead or frenzy_cd > 0.0 or infection + frenzy_cost >= 100.0:
 		return
 	add_infection(frenzy_cost)
-	frenzy_t = 5.0
+	frenzy_t = 5.0 * frenzy_dur_mult
 	frenzy_cd = 12.0
 	Sfx.play("frenzy")
 	emit_signal("changed")
@@ -327,7 +339,7 @@ func take_hit(amount: float, from_pos: Vector2 = Vector2.ZERO) -> void:
 	_hurt_t = 0.25
 	_squash = Vector2(1.18, 0.82)
 	_squash_t = 0.16
-	hp -= amount * (1.0 + infection / 200.0)  # infection risk: fragile when riding high
+	hp -= amount * (1.0 + infection / 200.0) * damage_taken_mult  # infection risk: fragile when riding high
 	Sfx.play("hurt")
 	var m := _main()
 	if m:
@@ -365,7 +377,7 @@ func add_scrap(n: int) -> void:
 func add_xp(n: int) -> void:
 	if dead:
 		return
-	xp += n
+	xp += int(round(n * xp_mult))
 	while xp >= xp_next:
 		xp -= xp_next
 		level += 1
